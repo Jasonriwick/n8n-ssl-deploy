@@ -1,0 +1,6 @@
+# 忽略 n8n 的持久化和敏感数据
+n8n_data/
+backups/
+.env
+*.tar.gz
+*.log
