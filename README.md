@@ -34,7 +34,7 @@
 ### ✅ 1. 上传或下载脚本
 
 ```bash
-curl -O https://raw.githubusercontent.com/yourusername/n8n-ssl-deploy/main/n8n-ssl-deploy.sh
+curl -O https://raw.githubusercontent.com/Jasonriwick/n8n-ssl-deploy/main/n8n-ssl-deploy.sh
 chmod +x n8n-ssl-deploy.sh
 ```
 
