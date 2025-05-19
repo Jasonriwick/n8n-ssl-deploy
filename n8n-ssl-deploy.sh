@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 echo "🔧 开始 N8N + Nginx + SSL 一键部署..."
@@ -10,23 +11,22 @@ if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
   exit 1
 fi
 
-echo "📦 正在安装依赖..."
-
+echo "📦 安装依赖..."
 apt update && apt install -y \
   curl gnupg2 ca-certificates lsb-release apt-transport-https \
   software-properties-common ufw nginx docker.io docker-compose \
-  certbot python3-certbot-nginx
+  certbot python3-certbot-nginx unzip
 
-# Docker 服务启动并加入开机启动
+# Docker 服务
 systemctl enable docker
 systemctl start docker
 
-# 添加 docker compose 别名（兼容新版）
+# Docker Compose 命令兼容处理
 if ! command -v docker-compose >/dev/null 2>&1 && command -v docker compose >/dev/null 2>&1; then
   ln -s $(which docker) /usr/local/bin/docker-compose
 fi
 
-echo "🧱 清理旧容器、端口和网络..."
+# 清理旧容器
 docker stop n8n >/dev/null 2>&1
 docker rm n8n >/dev/null 2>&1
 PID=$(lsof -t -i:5678)
@@ -34,18 +34,18 @@ PID=$(lsof -t -i:5678)
 docker network rm n8n-network >/dev/null 2>&1
 docker network create n8n-network
 
-echo "📁 创建数据目录..."
+# 创建目录
 mkdir -p /home/n8n/n8n
 mkdir -p /home/n8n/n8ndata
 mkdir -p /home/n8n/backups
 chmod -R 777 /home/n8n
 
-echo "⚙️ 配置防火墙..."
+# 防火墙
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
 ufw --force enable
 
-echo "📝 写入 docker-compose.yml..."
+# 写入 docker-compose.yml
 cat > /home/n8n/docker-compose.yml <<EOF
 version: "3.7"
 services:
@@ -74,12 +74,10 @@ networks:
     external: true
 EOF
 
-echo "🚀 启动 n8n 容器..."
 cd /home/n8n
 docker compose up -d
 
-echo "🌐 配置 Nginx..."
-
+# 写入 Nginx 配置（带 WebSocket 支持）
 cat > /etc/nginx/sites-available/n8n <<EOF
 server {
     listen 80;
@@ -103,6 +101,11 @@ server {
 
     location / {
         proxy_pass http://localhost:5678;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -111,13 +114,15 @@ server {
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
-nginx -t && systemctl restart nginx
+# 软链 + 清理冲突
+rm -f /etc/nginx/sites-enabled/default
+ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/n8n
+nginx -t && systemctl reload nginx
 
-echo "🔐 申请 Let's Encrypt SSL..."
+# SSL 签发
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-echo "💾 写入备份脚本..."
+# 写入备份脚本
 cat <<EOF > /home/n8n/backup.sh
 #!/bin/bash
 DATE=\$(date +%F_%T)
@@ -127,10 +132,8 @@ chmod +x /home/n8n/backup.sh
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 
 echo ""
-echo "✅ n8n 已成功部署并启用 SSL！"
-echo "🔗 访问地址: https://$DOMAIN"
-echo "🔐 用户名: admin"
-echo "🔑 密码: admin123"
+echo "✅ n8n 部署完成！访问地址: https://$DOMAIN"
+echo "🔐 用户：admin / 密码：admin123"
 echo "📂 数据目录: /home/n8n/n8n"
-echo "📂 工作流: /home/n8n/n8ndata"
+echo "📂 工作流目录: /home/n8n/n8ndata"
 echo "📦 备份目录: /home/n8n/backups"
