@@ -1,19 +1,99 @@
-# n8n-ssl-deploy
+# 🚀 n8n-ssl-deploy 一键部署脚本
 
-One-click shell script for installing n8n with Docker, Nginx, and Let's Encrypt SSL.
+本项目提供一个**一键部署脚本**，可帮助你在任意 Ubuntu 服务器（推荐 22.04+ / 24.04）上快速搭建 [n8n](https://n8n.io) 自动化工作流系统，并配置 HTTPS 访问（使用 Let’s Encrypt 免费证书）。
 
-## Features
+## ✅ 功能亮点
 
-- Auto installs Docker and Docker Compose
-- Installs n8n via Docker Compose
-- Sets up NGINX reverse proxy
-- Automatically issues HTTPS SSL certificate with Let's Encrypt using Certbot
-- Includes auto-renew cron job
-- Prompts user for domain and email
+- 自动安装 **Docker**、**Docker Compose**
+- 使用 `docker-compose` 启动 n8n 服务，绑定指定域名
+- 自动配置 **Nginx** 反向代理（监听 80 / 443）
+- 自动申请并配置 **SSL 证书**（Let's Encrypt）
+- 数据持久化至指定 VPS 目录，防止丢失
+- 自动生成每日备份（打包为 `.tar.gz`）
+- 支持一键恢复备份数据
+- 支持用户交互：首次运行会提示输入 **域名** 和 **邮箱**
 
-## Usage
+## 📁 默认路径说明
+
+| 类型       | VPS 挂载路径            | 容器内路径              |
+|------------|-------------------------|--------------------------|
+| 配置数据   | `/home/n8n/n8n`         | `/home/node/.n8n`        |
+| 工作流数据 | `/home/n8n/n8ndata`     | `/data`（n8n扩展目录）   |
+| 备份文件   | `/home/n8n/backups`     | N/A                      |
+
+## 📦 使用方法
+
+### ✅ 1. 上传或下载脚本
 
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/Jasonriwick/n8n-ssl-deploy/main/n8n-ssl-deploy.sh)
+curl -O https://raw.githubusercontent.com/你的用户名/n8n-ssl-deploy/main/n8n-ssl-deploy.sh
+chmod +x n8n-ssl-deploy.sh
 ```
 
+### ✅ 2. 运行脚本
+
+```bash
+./n8n-ssl-deploy.sh
+```
+
+> 脚本将提示你输入：
+> - 绑定的域名（需已解析到该 VPS）
+> - 用于 SSL 申请的邮箱（接收续期提醒）
+
+## 🌐 部署完成后访问方式
+
+访问你的绑定域名即可使用 n8n：
+
+```
+https://你的域名
+```
+
+默认登录：
+
+- 用户名：`admin`
+- 密码：`admin123`
+
+> ⚠️ 建议部署完成后立即登录后台，修改默认密码！
+
+## 🧩 附加工具
+
+### 🔁 自动备份（每日凌晨 2 点执行）
+
+备份文件将保存到 `/home/n8n/backups/`，格式如下：
+
+```
+n8n_backup_2024-05-19_02:00:00.tar.gz
+```
+
+### 🔄 一键恢复脚本
+
+运行 `restore-n8n.sh` 并输入备份路径，即可恢复：
+
+```bash
+bash restore-n8n.sh
+```
+
+## 🧱 系统环境要求
+
+- 系统：Ubuntu 22.04 或 24.04
+- 内存：最小 1GB（脚本已自动配置 Swap）
+- 端口：开放 80 / 443
+- 域名：需已解析到 VPS IP
+
+## 🔐 安全建议
+
+- 修改默认密码后再对外开放接口
+- 配置防火墙（已自动启用 UFW）
+- 可结合 Fail2ban / 日志分析增强安全性
+
+## 💬 常见问题
+
+**1. 证书申请失败怎么办？**  
+请确认你的域名已经正确解析，并且端口 80 没有被其他服务占用。
+
+**2. 想迁移到新 VPS？**  
+只需打包 `/home/n8n` 整个目录，拷贝到新机后运行 `docker compose up -d` 即可。
+
+## ✨ 授权协议
+
+本脚本开源、可自由使用和二次修改。如有改进建议欢迎提 PR。
