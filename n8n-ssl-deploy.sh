@@ -1,59 +1,62 @@
 #!/bin/bash
 
-# -----------------------------------------
-# 🚀 n8n One-Click Install Script (SSL + Backup)
-# -----------------------------------------
-# Tested on Ubuntu 24.04 LTS - 1GB RAM / 20GB disk
-# Author: Jasonriwick (https://github.com/Jasonriwick)
-# -----------------------------------------
+echo "🔧 启动 N8N + SSL 自动部署..."
 
-DOMAIN="thesamelife.click"
-EMAIL="your-email@example.com"
-N8N_DIR="/opt/n8n"
-BACKUP_DIR="/opt/n8n/backup"
+read -p "🌐 请输入你的域名 (如 thesamelife.click): " DOMAIN
+read -p "📧 请输入用于 SSL 的邮箱: " EMAIL
 
-echo "🔧 Updating system..."
-apt update && apt upgrade -y
+if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
+  echo "❌ 域名和邮箱不能为空，脚本终止。"
+  exit 1
+fi
 
-echo "📦 Installing dependencies..."
-apt install -y curl gnupg2 ca-certificates lsb-release apt-transport-https software-properties-common fail2ban ufw nginx docker.io docker-compose certbot python3-certbot-nginx
+# 安装必要工具
+apt update && apt install -y curl gnupg2 ca-certificates lsb-release apt-transport-https   software-properties-common ufw nginx docker.io docker-compose certbot python3-certbot-nginx
 
-echo "🔐 Setting up firewall..."
+# 配置防火墙
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
 ufw --force enable
 
-echo "📁 Creating N8N directory..."
-mkdir -p "$N8N_DIR" "$BACKUP_DIR"
+# 启动 Docker
+systemctl enable docker
+systemctl start docker
 
-echo "🧾 Creating docker-compose.yml..."
-cat <<EOF > "$N8N_DIR/docker-compose.yml"
-version: '3'
+# 创建挂载目录
+mkdir -p /home/n8n/n8n
+mkdir -p /home/n8n/n8ndata
+mkdir -p /home/n8n/backups
+chmod -R 777 /home/n8n
+
+# 写入 docker-compose.yml
+cat > /home/n8n/docker-compose.yml <<EOF
+version: "3.7"
 services:
   n8n:
-    image: docker.n8n.io/n8nio/n8n
-    container_name: n8n
+    image: n8nio/n8n
+    restart: always
     ports:
       - "5678:5678"
-    volumes:
-      - ./n8n_data:/home/node/.n8n
     environment:
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=securepassword123
+      - N8N_BASIC_AUTH_PASSWORD=admin123
       - N8N_HOST=$DOMAIN
-      - N8N_PORT=5678
+      - N8N_PORT=443
+      - N8N_PROTOCOL=https
       - WEBHOOK_URL=https://$DOMAIN/
       - TZ=Asia/Shanghai
-    restart: always
+    volumes:
+      - /home/n8n/n8n:/home/node/.n8n
+      - /home/n8n/n8ndata:/data
 EOF
 
-echo "▶️ Starting n8n container..."
-cd "$N8N_DIR"
+# 启动 n8n 服务
+cd /home/n8n
 docker compose up -d
 
-echo "🌐 Configuring Nginx reverse proxy..."
-cat <<EOF > /etc/nginx/sites-available/n8n
+# Nginx 配置
+cat > /etc/nginx/sites-available/n8n <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -71,16 +74,24 @@ EOF
 ln -s /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
 nginx -t && systemctl restart nginx
 
-echo "🔐 Obtaining SSL certificate..."
-certbot --nginx -d "$DOMAIN" --agree-tos --redirect --email "$EMAIL" --non-interactive
+# SSL 证书签发
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-echo "📅 Setting up daily backup..."
-cat <<EOF > /usr/local/bin/n8n-backup.sh
+# 写入备份脚本
+cat <<EOF > /home/n8n/backup.sh
 #!/bin/bash
-tar -czf "$BACKUP_DIR/n8n-\$(date +%F).tar.gz" "$N8N_DIR/n8n_data"
+DATE=\$(date +%F_%T)
+tar czf /home/n8n/backups/n8n_backup_\$DATE.tar.gz -C /home/n8n/n8n . -C /home/n8n/n8ndata .
 EOF
 
-chmod +x /usr/local/bin/n8n-backup.sh
-echo "0 3 * * * root /usr/local/bin/n8n-backup.sh" >> /etc/crontab
+chmod +x /home/n8n/backup.sh
 
-echo "✅ Deployment complete! Access n8n at: https://$DOMAIN"
+# 设置每日凌晨2点自动备份
+(crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
+
+echo ""
+echo "✅ 部署完成！你现在可以访问: https://$DOMAIN"
+echo "🔐 用户: admin / 密码: admin123"
+echo "📁 数据目录: /home/n8n/n8n"
+echo "📁 工作流目录: /home/n8n/n8ndata"
+echo "📦 备份目录: /home/n8n/backups"
