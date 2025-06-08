@@ -129,8 +129,10 @@ if ! grep -q "http2" $NGINX_CONF; then
   sed -i 's/listen 443 ssl;/listen 443 ssl http2;/' /etc/nginx/sites-available/default || true
 fi
 
-# 插入 GZIP 到 http { 内
-if ! grep -q "gzip on;" /etc/nginx/nginx.conf; then
+# 插入 GZIP 到 http { 内（避免重复）
+if grep -q "gzip on;" /etc/nginx/nginx.conf; then
+  echo "⚠️ 检测到 nginx.conf 已有 GZIP 配置，跳过插入。"
+else
   sed -i '/http {/a \
     gzip on;\
     gzip_disable "msie6";\
@@ -141,7 +143,9 @@ if ! grep -q "gzip on;" /etc/nginx/nginx.conf; then
     gzip_http_version 1.1;\
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\
   ' /etc/nginx/nginx.conf
+  echo "✅ 已成功插入 GZIP 配置。"
 fi
+
 
 # 创建目录
 mkdir -p /home/n8n/n8n
