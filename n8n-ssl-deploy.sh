@@ -58,6 +58,7 @@ read -p "🤖 是否开启 N8N 自动更新？(yes/no): " AUTO_UPDATE
 
 # 安装依赖
 if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
+  export DEBIAN_FRONTEND=noninteractive
   apt update
   apt install -y curl wget ca-certificates gnupg2 lsb-release apt-transport-https \
     software-properties-common sudo unzip nginx ufw cron docker.io docker-compose jq \
@@ -139,17 +140,6 @@ sed -i '/http {/a \
     gzip_http_version 1.1;\
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\
 ' /etc/nginx/nginx.conf
-
-cat <<EOF >> /etc/nginx/nginx.conf
-
-gzip on;
-gzip_disable "msie6";
-
-gzip_vary on;
-gzip_proxied any;
-gzip_comp_level 6;
-gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
-EOF
 
 # 创建目录
 mkdir -p /home/n8n/n8n
@@ -276,7 +266,7 @@ a {
 }
 EOF
 
-# Nginx 配置（HTTP/2 + GZIP）
+# Nginx 配置
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 80;
@@ -339,7 +329,7 @@ docker compose up -d
 # 签发 SSL 证书
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-# 备份脚本 backup.sh
+# 备份脚本
 cat > /home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%F_%T)
@@ -347,14 +337,14 @@ tar czf /home/n8n/backups/n8n_backup_$DATE.tar.gz -C /home/n8n/n8n . -C /home/n8
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 自动清理14天前备份 clean-backups.sh
+# 自动清理14天前备份
 cat > /home/n8n/clean-backups.sh <<'EOF'
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +14 -exec rm -f {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
-# 自动检测新版本 check-update.sh
+# 自动检测新版本
 cat > /home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 LATEST=$(curl -s https://hub.docker.com/v2/repositories/n8nio/n8n/tags | jq -r '.results[0].name')
@@ -367,7 +357,7 @@ fi
 EOF
 chmod +x /home/n8n/check-update.sh
 
-# 自动升级脚本 auto-upgrade.sh
+# 自动升级脚本
 cat > /home/n8n/auto-upgrade.sh <<'EOF'
 #!/bin/bash
 if [ -f /home/n8n/update.flag ]; then
@@ -380,7 +370,7 @@ fi
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# 手动升级脚本 upgrade-n8n.sh
+# 手动升级脚本
 cat > /home/n8n/upgrade-n8n.sh <<'EOF'
 #!/bin/bash
 bash /home/n8n/backup.sh
@@ -390,7 +380,7 @@ docker compose up -d
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 回滚脚本 restore-n8n.sh
+# 回滚脚本
 cat > /home/n8n/restore-n8n.sh <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/home/n8n/backups"
@@ -431,7 +421,7 @@ echo "✅ 回滚完成！n8n 已恢复到选定备份版本。"
 EOF
 chmod +x /home/n8n/restore-n8n.sh
 
-# 重置账号密码 reset-credentials.sh
+# 重置账号密码
 cat > /home/n8n-auth/reset-credentials.sh <<'EOF'
 #!/bin/bash
 read -p "👤 新用户名: " NEW_USER
@@ -447,7 +437,7 @@ echo "✅ 账号密码重置成功！"
 EOF
 chmod +x /home/n8n-auth/reset-credentials.sh
 
-# 查看账号密码 view-credentials.sh
+# 查看账号密码
 cat > /home/n8n-auth/view-credentials.sh <<'EOF'
 #!/bin/bash
 echo "当前登录信息（加密）:"
@@ -455,7 +445,7 @@ cat /home/n8n-auth/.credentials
 EOF
 chmod +x /home/n8n-auth/view-credentials.sh
 
-# 显示部署信息 n8n-show-info.sh
+# 查看部署信息
 cat > /home/n8n-auth/n8n-show-info.sh <<'EOF'
 #!/bin/bash
 DOMAIN_FILE="/home/n8n-auth/.domain"
@@ -485,7 +475,7 @@ echo "🚀 手动升级脚本: /home/n8n/upgrade-n8n.sh"
 EOF
 chmod +x /home/n8n-auth/n8n-show-info.sh
 
-# Crontab 任务
+# 定时任务 (crontab)
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
 
@@ -510,3 +500,4 @@ echo "🗑️ 自动清理14天前备份脚本: /home/n8n/clean-backups.sh"
 echo "💡 手动回滚脚本: /home/n8n/restore-n8n.sh"
 echo "🚀 手动升级脚本: /home/n8n/upgrade-n8n.sh"
 echo "🔎 查看部署信息脚本: /home/n8n-auth/n8n-show-info.sh"
+
