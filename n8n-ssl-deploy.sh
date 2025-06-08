@@ -61,7 +61,7 @@ if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
   apt update
   apt install -y curl wget ca-certificates gnupg2 lsb-release apt-transport-https \
     software-properties-common sudo unzip ufw cron docker.io docker-compose jq \
-    certbot python3-certbot-nginx fail2ban openssl lsof
+    certbot python3-certbot nginx fail2ban openssl lsof lua-nginx-module
   systemctl enable docker
   systemctl start docker
   ufw allow 22/tcp
@@ -72,7 +72,7 @@ elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" =
   yum update -y
   yum install -y epel-release
   yum install -y curl wget ca-certificates gnupg2 lsb-release unzip firewalld docker jq \
-    certbot python3-certbot-nginx cronie fail2ban openssl lsof
+    certbot python3-certbot nginx fail2ban openssl lsof lua-nginx-module
   systemctl enable docker
   systemctl start docker
   systemctl enable firewalld
@@ -85,7 +85,7 @@ elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" =
 elif [[ "$OS" == "amzn" ]]; then
   yum update -y
   amazon-linux-extras enable nginx1 docker
-  yum install -y docker unzip certbot python3-certbot-nginx jq fail2ban openssl
+  yum install -y docker unzip certbot python3-certbot nginx jq fail2ban openssl lua-nginx-module
   systemctl enable docker
   systemctl start docker
 fi
@@ -99,7 +99,7 @@ if [ $(free -m | awk '/^Mem:/{print $2}') -lt 2048 ]; then
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-# 配置 Fail2ban
+# 配置 Fail2ban 防止暴力破解
 cat > /etc/fail2ban/jail.d/nginx-http-auth.conf <<'EOF'
 [nginx-http-auth]
 enabled = true
@@ -113,7 +113,7 @@ EOF
 systemctl enable fail2ban
 systemctl start fail2ban
 
-# 优化 Nginx gzip
+# Nginx Gzip 配置优化
 cat > /etc/nginx/nginx.conf <<'EOF'
 user www-data;
 worker_processes auto;
@@ -121,18 +121,17 @@ pid /run/nginx.pid;
 include /etc/nginx/modules-enabled/*.conf;
 
 events {
-    worker_connections 768;
+    worker_connections 1024;
 }
 
 http {
     sendfile on;
     tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
     types_hash_max_size 2048;
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
-
-    access_log /var/log/nginx/access.log;
-    error_log /var/log/nginx/error.log;
 
     gzip on;
     gzip_disable "msie6";
@@ -147,7 +146,7 @@ http {
 }
 EOF
 
-# 5. 配置 Nginx 反向代理和登录验证
+# 生成必要目录
 mkdir -p /home/n8n-auth
 mkdir -p /var/www/html
 mkdir -p /home/n8n/n8n
@@ -155,18 +154,16 @@ mkdir -p /home/n8n/n8ndata
 mkdir -p /home/n8n/backups
 chmod -R 777 /home/n8n
 
-# 写入 Basic Auth 用户文件
+# 保存 Basic Auth 登录信息
 HASHED_USER=$(echo -n "$BASIC_USER" | openssl dgst -sha256 | awk '{print $2}')
 HASHED_PASS=$(echo -n "$BASIC_PASSWORD" | openssl dgst -sha256 | awk '{print $2}')
 echo "$HASHED_USER:$HASHED_PASS" > /home/n8n-auth/.credentials
-
-# 保存登录信息
 echo "$DOMAIN" > /home/n8n-auth/.domain
 echo "$BASIC_USER" > /home/n8n-auth/.basic_user
 echo "$BASIC_PASSWORD" > /home/n8n-auth/.basic_password
 
-# 写入 login.html
-cat > /home/n8n-auth/login.html <<'EOF'
+# 登录页面 login.html
+cat > /var/www/html/login.html <<'EOF'
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -177,7 +174,7 @@ cat > /home/n8n-auth/login.html <<'EOF'
 <body>
 <div class="login-container">
   <h1>Welcome to N8N</h1>
-  <form method="post" action="/">
+  <form method="post" action="/auth">
     <input type="text" name="username" placeholder="用户名" required>
     <input type="password" name="password" placeholder="密码" required>
     <button type="submit">登录</button>
@@ -190,8 +187,8 @@ cat > /home/n8n-auth/login.html <<'EOF'
 </html>
 EOF
 
-# 写入 login.css
-cat > /home/n8n-auth/login.css <<'EOF'
+# 登录样式 login.css
+cat > /var/www/html/login.css <<'EOF'
 body {
   background: linear-gradient(135deg, #1a1a2e, #16213e);
   color: white;
@@ -231,7 +228,7 @@ a {
 }
 EOF
 
-# 写入 auth.lua
+# 登录验证 Lua 脚本 auth.lua
 cat > /home/n8n-auth/auth.lua <<'EOF'
 function sha256(input)
     local digest = ngx.sha256_bin(input)
@@ -272,7 +269,7 @@ else
 end
 EOF
 
-# 创建 Nginx 配置文件
+# Nginx 反代配置 n8n.conf
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 80;
@@ -294,6 +291,18 @@ server {
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
+    location /auth {
+        content_by_lua_file /home/n8n-auth/auth.lua;
+    }
+
+    location /login.html {
+        root /var/www/html;
+    }
+
+    location /login.css {
+        root /var/www/html;
+    }
+
     location / {
         content_by_lua_file /home/n8n-auth/auth.lua;
         proxy_pass http://localhost:5678;
@@ -305,20 +314,12 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
-
-    location /login.html {
-        root /home/n8n-auth/;
-    }
-
-    location /login.css {
-        root /home/n8n-auth/;
-    }
 }
 EOF
 
 nginx -t && systemctl reload nginx
 
-# 写入 n8n 的 Docker Compose
+# 6. 配置 Docker Compose 文件
 cat > /home/n8n/docker-compose.yml <<EOF
 version: '3.8'
 services:
@@ -343,10 +344,10 @@ docker network create n8n-network || true
 cd /home/n8n
 docker compose up -d
 
-# 申请 SSL 证书
+# 7. 签发 SSL 证书
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-# 6. 写入备份脚本 backup.sh
+# 8. 备份脚本 backup.sh
 cat > /home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%F_%T)
@@ -354,14 +355,14 @@ tar czf /home/n8n/backups/n8n_backup_$DATE.tar.gz -C /home/n8n/n8n . -C /home/n8
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 7. 写入自动清理旧备份 clean-backups.sh
+# 9. 自动清理备份 clean-backups.sh
 cat > /home/n8n/clean-backups.sh <<'EOF'
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +14 -exec rm -f {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
-# 8. 写入检测更新脚本 check-update.sh
+# 10. 检查更新脚本 check-update.sh
 cat > /home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 LATEST=$(curl -s https://hub.docker.com/v2/repositories/n8nio/n8n/tags | jq -r '.results[0].name')
@@ -374,7 +375,7 @@ fi
 EOF
 chmod +x /home/n8n/check-update.sh
 
-# 9. 写入自动升级脚本 auto-upgrade.sh
+# 11. 自动升级脚本 auto-upgrade.sh
 cat > /home/n8n/auto-upgrade.sh <<'EOF'
 #!/bin/bash
 if [ -f /home/n8n/update.flag ]; then
@@ -387,7 +388,7 @@ fi
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# 10. 写入手动升级脚本 upgrade-n8n.sh
+# 12. 手动升级脚本 upgrade-n8n.sh
 cat > /home/n8n/upgrade-n8n.sh <<'EOF'
 #!/bin/bash
 bash /home/n8n/backup.sh
@@ -397,7 +398,7 @@ docker-compose up -d
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 11. 写入手动回滚脚本 restore-n8n.sh
+# 13. 手动回滚脚本 restore-n8n.sh
 cat > /home/n8n/restore-n8n.sh <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/home/n8n/backups"
@@ -438,7 +439,7 @@ echo "✅ 回滚完成！n8n 已恢复到选定备份版本。"
 EOF
 chmod +x /home/n8n/restore-n8n.sh
 
-# 12. 密码重置脚本 reset-credentials.sh
+# 14. 密码重置脚本 reset-credentials.sh
 cat > /home/n8n-auth/reset-credentials.sh <<'EOF'
 #!/bin/bash
 read -p "👤 新用户名: " NEW_USER
@@ -454,7 +455,7 @@ echo "✅ 账号密码重置成功！"
 EOF
 chmod +x /home/n8n-auth/reset-credentials.sh
 
-# 13. 查看账号密码脚本 view-credentials.sh
+# 15. 查看账号密码脚本 view-credentials.sh
 cat > /home/n8n-auth/view-credentials.sh <<'EOF'
 #!/bin/bash
 DOMAIN_FILE="/home/n8n-auth/.domain"
@@ -478,7 +479,7 @@ echo "📝 当前登录密码: $BASIC_PASSWORD"
 EOF
 chmod +x /home/n8n-auth/view-credentials.sh
 
-# 14. Crontab 定时任务设置
+# 16. Crontab 定时任务
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
 
@@ -487,10 +488,10 @@ if [ "$AUTO_UPDATE" == "yes" ]; then
   (crontab -l 2>/dev/null; echo "0 4 * * * /home/n8n/auto-upgrade.sh") | crontab -
 fi
 
-# 15. Nginx 重启，完美收工
+# 17. 重启 Nginx 结束部署
 nginx -t && systemctl reload nginx
 
-# 16. 结束信息
+# 18. 最终提示信息
 echo ""
 echo "✅ n8n 自定义登录部署完成！访问地址: https://$DOMAIN"
 echo "📝 当前登录用户名: $BASIC_USER"
