@@ -65,9 +65,10 @@ if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
     certbot python3-certbot-nginx libnginx-mod-http-lua fail2ban openssl
   systemctl enable docker
   systemctl start docker
-  ufw allow OpenSSH
-  ufw allow 'Nginx Full'
-  ufw --force enable
+# 确保 SSH 端口放行
+ufw allow 22/tcp
+ufw allow 'Nginx Full'
+ufw --force enable
 
 elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
   yum update -y
