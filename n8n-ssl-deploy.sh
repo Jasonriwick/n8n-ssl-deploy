@@ -55,13 +55,13 @@ BASIC_PASSWORD=${BASIC_PASSWORD:-admin123}
 echo ""
 read -p "🤖 是否开启 N8N 自动更新？(yes/no): " AUTO_UPDATE
 
-# 4. 安装必要依赖
+# 4. 安装必要依赖 (补上 python3-certbot-nginx)
 export DEBIAN_FRONTEND=noninteractive
 if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
   apt update
   apt install -y curl wget ca-certificates gnupg2 lsb-release apt-transport-https \
     software-properties-common sudo unzip ufw cron docker.io docker-compose jq \
-    certbot python3-certbot nginx fail2ban openssl nodejs npm lsof
+    certbot python3-certbot python3-certbot-nginx nginx fail2ban openssl nodejs npm lsof
   systemctl enable docker
   systemctl start docker
   ufw allow 22/tcp
@@ -73,28 +73,25 @@ elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" =
   yum update -y
   yum install -y epel-release
   yum install -y curl wget ca-certificates gnupg2 lsb-release unzip firewalld docker jq \
-    certbot python3-certbot nginx fail2ban openssl nodejs npm lsof
+    certbot python3-certbot python3-certbot-nginx nginx fail2ban openssl nodejs npm lsof
   systemctl enable docker
   systemctl start docker
   systemctl enable firewalld
   systemctl start firewalld
-  firewall-cmd --permanent --add-port=22/tcp
-  firewall-cmd --permanent --add-port=80/tcp
-  firewall-cmd --permanent --add-port=443/tcp
+  firewall-cmd --permanent --add-service=ssh
+  firewall-cmd --permanent --add-service=http
+  firewall-cmd --permanent --add-service=https
   firewall-cmd --reload
 
 elif [[ "$OS" == "amzn" ]]; then
   yum update -y
   amazon-linux-extras enable nginx1 docker
-  yum install -y docker unzip certbot python3-certbot nginx jq fail2ban openssl nodejs npm lsof
+  yum install -y docker unzip certbot python3-certbot python3-certbot-nginx nginx jq fail2ban openssl nodejs npm lsof
   systemctl enable docker
   systemctl start docker
 fi
 
-# 创建临时 HTTP 配置申请证书
-mkdir -p /var/www/html/.well-known/acme-challenge
-chmod -R 777 /var/www/html
-
+# 5. 初步 Nginx 配置 (仅 80端口，方便证书申请)
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 80;
@@ -112,12 +109,15 @@ EOF
 
 systemctl enable nginx
 systemctl start nginx
+mkdir -p /var/www/html/.well-known/acme-challenge
+chmod -R 777 /var/www/html
+
 nginx -t && systemctl reload nginx
 
-# 5. 申请 SSL 证书
+# 6. 申请 SSL 证书
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-# 6. 创建 Node.js 后端认证服务
+# 7. 创建 Node.js 后端认证服务
 mkdir -p /home/n8n-auth
 chmod -R 777 /home/n8n-auth
 
@@ -157,7 +157,7 @@ cd /home/n8n-auth
 npm init -y
 npm install express body-parser cookie-parser crypto
 
-# 设置 systemd 管理认证服务
+# 启动 Node.js 认证服务
 cat > /etc/systemd/system/n8n-auth.service <<EOF
 [Unit]
 Description=N8N Login Auth Service
@@ -179,7 +179,7 @@ systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 7. 登录页面
+# 8. 登录页面
 cat > /var/www/html/login.html <<'EOF'
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -244,7 +244,9 @@ a {
 }
 EOF
 
-# 8. 更新 Nginx 反向代理配置
+chmod -R 777 /var/www/html
+
+# 9. 更新 Nginx 配置到 HTTPS + 登录保护
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 443 ssl http2;
@@ -285,7 +287,7 @@ EOF
 
 nginx -t && systemctl reload nginx
 
-# 9. 配置 n8n 的 Docker Compose
+# 10. 部署 n8n Docker
 mkdir -p /home/n8n/n8n
 mkdir -p /home/n8n/n8ndata
 mkdir -p /home/n8n/backups
@@ -315,7 +317,7 @@ docker network create n8n-network || true
 cd /home/n8n
 docker compose up -d
 
-# 10. 自动备份 + 自动清理 + 自动更新
+# 11. 自动备份 + 自动清理
 cat > /home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%F_%T)
@@ -329,6 +331,7 @@ find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +14 -exec rm -f {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
+# 12. 自动更新
 cat > /home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 LATEST=$(curl -s https://hub.docker.com/v2/repositories/n8nio/n8n/tags | jq -r '.results[0].name')
@@ -362,7 +365,7 @@ docker-compose up -d
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 定时任务 Crontab
+# 13. Crontab 自动任务
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
 
@@ -375,9 +378,8 @@ echo ""
 echo "✅ n8n 自定义登录部署完成！访问地址: https://$DOMAIN"
 echo "📝 登录用户名: $BASIC_USER"
 echo "📝 登录密码: $BASIC_PASSWORD"
-echo "🚀 自定义登录页面已启用，首次访问输入账号密码后进入 n8n。"
-echo "📦 自动备份脚本: /home/n8n/backup.sh"
-echo "🧹 自动清理脚本: /home/n8n/clean-backups.sh"
-echo "🚀 自动更新检测脚本: /home/n8n/check-update.sh"
-echo "🚀 自动升级脚本: /home/n8n/auto-upgrade.sh"
-echo "🔧 手动升级脚本: /home/n8n/upgrade-n8n.sh"
+echo "📦 自动备份: /home/n8n/backup.sh"
+echo "🧹 自动清理: /home/n8n/clean-backups.sh"
+echo "🚀 自动检测更新: /home/n8n/check-update.sh"
+echo "🚀 自动升级: /home/n8n/auto-upgrade.sh"
+echo "🔧 手动升级: /home/n8n/upgrade-n8n.sh"
