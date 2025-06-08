@@ -1,4 +1,3 @@
-
 #!/bin/bash
 
 echo "🔧 开始 N8N + Nginx + SSL 一键部署..."
@@ -131,9 +130,33 @@ EOF
 chmod +x /home/n8n/backup.sh
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 
+# 写入升级脚本
+cat <<EOF > /home/n8n/upgrade-n8n.sh
+#!/bin/bash
+
+echo "🔄 开始升级 n8n 到最新版..."
+
+cd /home/n8n || { echo "❌ 目录 /home/n8n 不存在！"; exit 1; }
+
+echo "📦 拉取 n8n 最新版镜像..."
+docker pull n8nio/n8n:latest
+
+echo "🛑 停止当前 n8n 容器..."
+docker compose down
+
+echo "🚀 启动新版 n8n 容器..."
+docker compose up -d
+
+echo "✅ n8n 升级完成！当前版本："
+docker ps --filter name=n8n
+EOF
+
+chmod +x /home/n8n/upgrade-n8n.sh
+
 echo ""
 echo "✅ n8n 部署完成！访问地址: https://$DOMAIN"
 echo "🔐 用户：admin / 密码：admin123"
 echo "📂 数据目录: /home/n8n/n8n"
 echo "📂 工作流目录: /home/n8n/n8ndata"
 echo "📦 备份目录: /home/n8n/backups"
+echo "⬆️ 以后升级 n8n 请运行：/home/n8n/upgrade-n8n.sh"
