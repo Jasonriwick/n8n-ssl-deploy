@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🔧 开始 N8N + OpenResty (Nginx+Lua) + SSL + 自定义登录页 + 安全强化版一键部署..."
+echo "🔧 开始 N8N + Nginx + SSL + 自定义登录页 + 安全强化版一键部署..."
 
 # 检测系统信息
 if [ -f /etc/os-release ]; then
@@ -22,14 +22,29 @@ case "$OS" in
       exit 1
     fi
     ;;
+  debian)
+    if [ "$VERSION_ID" -lt 10 ]; then
+      echo "❌ Debian 版本太旧，要求 10 或更高版本。"
+      exit 1
+    fi
+    ;;
+  centos|rocky|almalinux|rhel)
+    if [ "$VERSION_ID" -lt 8 ]; then
+      echo "❌ RedHat 系列版本太旧，要求 8 或更高版本。"
+      exit 1
+    fi
+    ;;
+  amzn)
+    echo "✅ 检测到 Amazon Linux 2，继续。"
+    ;;
   *)
-    echo "❌ 不支持的系统: $OS。仅支持 Ubuntu 20.04+。"
+    echo "❌ 不支持的系统: $OS。建议使用 Ubuntu, Debian, CentOS 8+。"
     exit 1
     ;;
 esac
 
 # 用户输入
-read -p "🌐 请输入你的域名 (如 thesamelife.click): " DOMAIN
+read -p "🌐 请输入你的域名 (如 example.com): " DOMAIN
 read -p "📧 请输入用于 SSL 的邮箱: " EMAIL
 
 read -p "👤 请输入登录用户名（留空默认 admin）: " BASIC_USER
@@ -41,62 +56,223 @@ echo ""
 
 read -p "🤖 是否开启 N8N 自动更新？(yes/no): " AUTO_UPDATE
 
-# 🚨 检查并卸载系统自带 Nginx，防止冲突
-if systemctl list-units --type=service | grep -q nginx; then
-  echo "⚠️ 检测到系统已安装 Nginx，准备卸载..."
-  systemctl stop nginx
-  systemctl disable nginx
-
-  if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-    apt purge -y nginx nginx-common nginx-core
-    apt autoremove -y
-  elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
-    yum remove -y nginx nginx-common nginx-core
-  elif [[ "$OS" == "amzn" ]]; then
-    yum remove -y nginx
+# 释放占用端口 80/443 服务
+echo "🔧 检查并释放端口 80 和 443..."
+for port in 80 443; do
+  PIDS=$(lsof -i:$port -t)
+  if [ -n "$PIDS" ]; then
+    echo "⚠️ 检测到端口 $port 被占用，正在释放..."
+    kill -9 $PIDS
   fi
+done
 
-  rm -rf /etc/nginx
-  echo "✅ 已卸载系统自带 Nginx，继续安装 OpenResty..."
+# 安装基础依赖
+if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt update
+  apt install -y curl wget ca-certificates gnupg2 lsb-release apt-transport-https \
+    software-properties-common sudo unzip ufw cron docker.io docker-compose jq \
+    certbot fail2ban openssl gnupg gnupg-agent
+
+elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
+  yum update -y
+  yum install -y epel-release
+  yum install -y curl wget ca-certificates gnupg2 lsb-release unzip firewalld docker jq \
+    certbot cronie fail2ban openssl gnupg gnupg2
 fi
 
-# 安装依赖
-export DEBIAN_FRONTEND=noninteractive
-apt update
-apt install -y curl wget ca-certificates gnupg2 lsb-release apt-transport-https \
-  software-properties-common sudo unzip ufw cron docker.io docker-compose jq \
-  certbot python3-certbot-nginx fail2ban openssl gnupg gnupg2 gnupg-agent
+# 检查 Docker Compose V2
+if ! docker compose version >/dev/null 2>&1; then
+  echo "⚠️ 检测到 Docker Compose v2 不存在，安装 docker-compose-plugin..."
+  apt install -y docker-compose-plugin || yum install -y docker-compose-plugin
+fi
 
-# 安装 OpenResty
-wget -qO - https://openresty.org/package/pubkey.gpg | sudo apt-key add -
-codename=$(lsb_release -sc)
-echo "deb http://openresty.org/package/ubuntu $codename main" | sudo tee /etc/apt/sources.list.d/openresty.list
-apt update
-apt install -y openresty
-
-# 启动 OpenResty
-systemctl enable openresty
-systemctl start openresty
-
-# 启动 Docker
+# Docker 启动
 systemctl enable docker
 systemctl start docker
 
-# 防火墙开放 22, 80, 443
-ufw allow 22/tcp
-ufw allow 80,443/tcp
+# 防火墙配置
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
 ufw --force enable
 
-# 启用 Swap
-if [ $(free -m | awk '/^Mem:/{print $2}') -lt 2048 ]; then
+# Swap 检测
+if ! swapon --show | grep -q '/swapfile'; then
+  echo "🔧 配置 Swap 文件..."
   fallocate -l 2G /swapfile
   chmod 600 /swapfile
   mkswap /swapfile
   swapon /swapfile
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
+else
+  echo "⚠️ 检测到 Swap 已存在，跳过创建。"
 fi
 
-# 写入 n8n 的 Nginx 配置，基于 OpenResty（带 Lua）
+# 安装 OpenResty Nginx（替代原版）
+echo "🔧 安装 OpenResty (Nginx)..."
+curl -O https://openresty.org/package/pubkey.gpg
+gpg --import pubkey.gpg
+OS_CODENAME=$(lsb_release -cs)
+echo "deb http://openresty.org/package/ubuntu $OS_CODENAME main" | tee /etc/apt/sources.list.d/openresty.list
+apt update
+apt install -y openresty
+
+# 检查 OpenResty 是否正常安装
+systemctl enable openresty
+systemctl start openresty
+
+# Fail2ban 配置
+cat > /etc/fail2ban/jail.d/nginx-http-auth.conf <<'EOF'
+[nginx-http-auth]
+enabled = true
+filter  = nginx-http-auth
+port    = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 5
+findtime = 600
+bantime  = 1800
+EOF
+systemctl enable fail2ban
+systemctl start fail2ban
+
+# 优化 OpenResty（启用 HTTP/2 和 GZIP）
+sed -i '/http {/a \
+    gzip on;\
+    gzip_disable "msie6";\
+    gzip_vary on;\
+    gzip_proxied any;\
+    gzip_comp_level 6;\
+    gzip_buffers 16 8k;\
+    gzip_http_version 1.1;\
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\
+    ' /usr/local/openresty/nginx/conf/nginx.conf
+
+# 创建必要目录
+mkdir -p /home/n8n/n8n
+mkdir -p /home/n8n/n8ndata
+mkdir -p /home/n8n-auth
+mkdir -p /home/n8n/backups
+chmod -R 777 /home/n8n
+
+# 保存账号密码（SHA256）
+HASHED_USER=$(echo -n "$BASIC_USER" | openssl dgst -sha256 | awk '{print $2}')
+HASHED_PASS=$(echo -n "$BASIC_PASSWORD" | openssl dgst -sha256 | awk '{print $2}')
+echo "$HASHED_USER:$HASHED_PASS" > /home/n8n-auth/.credentials
+
+echo "$DOMAIN" > /home/n8n-auth/.domain
+echo "$BASIC_USER" > /home/n8n-auth/.basic_user
+echo "$BASIC_PASSWORD" > /home/n8n-auth/.basic_password
+
+# 写入 auth.lua
+cat > /home/n8n-auth/auth.lua <<'EOF'
+function sha256(input)
+    local digest = ngx.sha256_bin(input)
+    return (string.gsub(digest, ".", function(c) return string.format("%02x", string.byte(c)) end))
+end
+
+local function is_authorized(user, pass)
+    local file = io.open("/home/n8n-auth/.credentials", "r")
+    if not file then
+        return false
+    end
+    local line = file:read("*l")
+    file:close()
+    local stored_user, stored_pass = line:match("([^:]+):([^:]+)")
+    if stored_user == sha256(user) and stored_pass == sha256(pass) then
+        return true
+    else
+        return false
+    end
+end
+
+if ngx.req.get_method() == "POST" then
+    ngx.req.read_body()
+    local args = ngx.req.get_post_args()
+    if is_authorized(args.username, args.password) then
+        ngx.header["Set-Cookie"] = {"logged_in=true; Path=/;"}
+        return ngx.redirect("/")
+    else
+        ngx.say("用户名或密码错误！")
+        return ngx.exit(401)
+    end
+else
+    if ngx.var.cookie_logged_in == "true" then
+        return
+    else
+        return ngx.exec("/login.html")
+    end
+end
+EOF
+
+# 写入 login.html
+cat > /home/n8n-auth/login.html <<'EOF'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>John N8N 一键部署</title>
+<link rel="stylesheet" href="/login.css">
+</head>
+<body>
+<div class="login-container">
+  <h1>Welcome to John N8N</h1>
+  <form method="post" action="/">
+    <input type="text" name="username" placeholder="用户名" required>
+    <input type="password" name="password" placeholder="密码" required>
+    <button type="submit">登录</button>
+  </form>
+  <div class="footer">
+    John N8N 一键部署<br>
+    <a href="https://github.com/Jasonriwick/n8n-ssl-deploy">https://github.com/Jasonriwick/n8n-ssl-deploy</a>
+  </div>
+</div>
+</body>
+</html>
+EOF
+
+# 写入 login.css
+cat > /home/n8n-auth/login.css <<'EOF'
+body {
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  color: white;
+  font-family: Arial, sans-serif;
+}
+.login-container {
+  width: 300px;
+  margin: 10% auto;
+  padding: 30px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  text-align: center;
+}
+input {
+  width: 90%;
+  padding: 10px;
+  margin: 10px 0;
+  border: none;
+  border-radius: 5px;
+}
+button {
+  width: 100%;
+  padding: 10px;
+  background: #0f3460;
+  border: none;
+  border-radius: 5px;
+  color: white;
+  font-weight: bold;
+}
+.footer {
+  margin-top: 20px;
+  font-size: 12px;
+}
+a {
+  color: #4dd0e1;
+  text-decoration: none;
+}
+EOF
+
+# 配置 Nginx (OpenResty)
+mkdir -p /usr/local/openresty/nginx/conf/conf.d
 cat > /usr/local/openresty/nginx/conf/conf.d/n8n.conf <<EOF
 server {
     listen 80;
@@ -106,16 +282,8 @@ server {
         root /var/www/html;
     }
 
-    location /login.html {
-        root /home/n8n-auth/;
-    }
-
-    location /login.css {
-        root /home/n8n-auth/;
-    }
-
     location / {
-        access_by_lua_file /home/n8n-auth/auth.lua;
+        content_by_lua_file /home/n8n-auth/auth.lua;
         proxy_pass http://localhost:5678;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -125,24 +293,6 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
-}
-EOF
-
-# 保存 Nginx 配置完成后，申请 SSL
-certbot certonly --webroot -w /var/www/html -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
-
-# 写 HTTPS 配置，强制跳转 HTTPS
-cat > /usr/local/openresty/nginx/conf/conf.d/n8n-ssl.conf <<EOF
-server {
-    listen 443 ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
 
     location /login.html {
         root /home/n8n-auth/;
@@ -151,38 +301,11 @@ server {
     location /login.css {
         root /home/n8n-auth/;
     }
-
-    location / {
-        access_by_lua_file /home/n8n-auth/auth.lua;
-        proxy_pass http://localhost:5678;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-
-server {
-    listen 80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
 }
 EOF
 
-# 保存账号密码
-HASHED_USER=$(echo -n "$BASIC_USER" | openssl dgst -sha256 | awk '{print $2}')
-HASHED_PASS=$(echo -n "$BASIC_PASSWORD" | openssl dgst -sha256 | awk '{print $2}')
-echo "$HASHED_USER:$HASHED_PASS" > /home/n8n-auth/.credentials
-echo "$DOMAIN" > /home/n8n-auth/.domain
-echo "$BASIC_USER" > /home/n8n-auth/.basic_user
-echo "$BASIC_PASSWORD" > /home/n8n-auth/.basic_password
-
-# Docker Compose 配置 n8n
+# 配置 n8n Docker Compose
 cat > /home/n8n/docker-compose.yml <<EOF
-version: "3.8"
 services:
   n8n:
     image: n8nio/n8n
@@ -202,16 +325,17 @@ networks:
       name: n8n-network
 EOF
 
-# 启动 Docker 容器
+# 创建 Docker 网络
 docker network create n8n-network || true
+
+# 启动 n8n 服务
 cd /home/n8n
 docker compose up -d
 
-# 启动 OpenResty (Nginx)
-systemctl enable openresty
-systemctl restart openresty
+# 签发 SSL 证书
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-# 备份脚本 backup.sh
+# 写入备份脚本
 cat > /home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%F_%T)
@@ -219,14 +343,14 @@ tar czf /home/n8n/backups/n8n_backup_$DATE.tar.gz -C /home/n8n/n8n . -C /home/n8
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 自动清理 14 天前备份 clean-backups.sh
+# 写入清理 14 天前备份脚本
 cat > /home/n8n/clean-backups.sh <<'EOF'
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +14 -exec rm -f {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
-# 自动检测新版本 check-update.sh
+# 写入自动检测新版本脚本
 cat > /home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 LATEST=$(curl -s https://hub.docker.com/v2/repositories/n8nio/n8n/tags | jq -r '.results[0].name')
@@ -239,7 +363,7 @@ fi
 EOF
 chmod +x /home/n8n/check-update.sh
 
-# 自动升级脚本 auto-upgrade.sh
+# 写入自动升级脚本
 cat > /home/n8n/auto-upgrade.sh <<'EOF'
 #!/bin/bash
 if [ -f /home/n8n/update.flag ]; then
@@ -252,7 +376,7 @@ fi
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# 手动升级脚本 upgrade-n8n.sh
+# 写入手动升级脚本
 cat > /home/n8n/upgrade-n8n.sh <<'EOF'
 #!/bin/bash
 bash /home/n8n/backup.sh
@@ -262,7 +386,7 @@ docker compose up -d
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 回滚脚本 restore-n8n.sh
+# 写入手动回滚脚本
 cat > /home/n8n/restore-n8n.sh <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/home/n8n/backups"
@@ -303,7 +427,7 @@ echo "✅ 回滚完成！n8n 已恢复到选定备份版本。"
 EOF
 chmod +x /home/n8n/restore-n8n.sh
 
-# 重置账号密码 reset-credentials.sh
+# 写入重置账号密码脚本
 cat > /home/n8n-auth/reset-credentials.sh <<'EOF'
 #!/bin/bash
 read -p "👤 新用户名: " NEW_USER
@@ -314,61 +438,43 @@ HASHED_PASS=$(echo -n "$NEW_PASS" | openssl dgst -sha256 | awk '{print $2}')
 echo "$HASHED_USER:$HASHED_PASS" > /home/n8n-auth/.credentials
 echo "$NEW_USER" > /home/n8n-auth/.basic_user
 echo "$NEW_PASS" > /home/n8n-auth/.basic_password
-openresty -t && systemctl reload openresty
+/usr/local/openresty/nginx/sbin/nginx -t && systemctl reload openresty
 echo "✅ 账号密码重置成功！"
 EOF
 chmod +x /home/n8n-auth/reset-credentials.sh
 
-# 查看账号密码 view-credentials.sh
+# 写入查看账号密码脚本
 cat > /home/n8n-auth/view-credentials.sh <<'EOF'
-#!/bin/bash
-echo "当前登录信息（加密）:"
-cat /home/n8n-auth/.credentials
-EOF
-chmod +x /home/n8n-auth/view-credentials.sh
-
-# 查看部署信息 n8n-show-info.sh
-cat > /home/n8n-auth/n8n-show-info.sh <<'EOF'
 #!/bin/bash
 DOMAIN_FILE="/home/n8n-auth/.domain"
 USER_FILE="/home/n8n-auth/.basic_user"
 PASS_FILE="/home/n8n-auth/.basic_password"
-
-if [ ! -f "$DOMAIN_FILE" ] || [ ! -f "$USER_FILE" ] || [ ! -f "$PASS_FILE" ]; then
-  echo "❌ 无法找到部署信息文件。"
-  exit 1
-fi
 
 DOMAIN=$(cat $DOMAIN_FILE)
 BASIC_USER=$(cat $USER_FILE)
 BASIC_PASSWORD=$(cat $PASS_FILE)
 
 echo ""
-echo "✅ n8n 自定义登录部署信息"
+echo "✅ 当前 n8n 部署信息"
 echo "🌐 访问地址: https://$DOMAIN"
-echo "📝 当前登录用户名: $BASIC_USER"
-echo "📝 当前登录密码: $BASIC_PASSWORD"
-echo "🚀 自定义登录页面已启用，首次访问输入账号密码后进入 n8n。"
-echo "🔧 重置账号密码脚本: /home/n8n-auth/reset-credentials.sh"
-echo "🔍 查看当前账号密码脚本: /home/n8n-auth/view-credentials.sh"
-echo "📦 手动备份脚本: /home/n8n/backup.sh"
-echo "💡 手动回滚脚本: /home/n8n/restore-n8n.sh"
-echo "🚀 手动升级脚本: /home/n8n/upgrade-n8n.sh"
+echo "📝 登录用户名: $BASIC_USER"
+echo "📝 登录密码: $BASIC_PASSWORD"
 EOF
-chmod +x /home/n8n-auth/n8n-show-info.sh
+chmod +x /home/n8n-auth/view-credentials.sh
 
-# Crontab 定时任务
+# 定时任务 (crontab)
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
+
 if [ "$AUTO_UPDATE" == "yes" ]; then
   (crontab -l 2>/dev/null; echo "0 8,12,20 * * * /home/n8n/check-update.sh") | crontab -
   (crontab -l 2>/dev/null; echo "0 4 * * * /home/n8n/auto-upgrade.sh") | crontab -
 fi
 
 # 重启 OpenResty
-openresty -t && systemctl reload openresty
+/usr/local/openresty/nginx/sbin/nginx -t && systemctl reload openresty
 
-# 输出部署总结
+# 完成信息
 echo ""
 echo "✅ n8n 自定义登录部署完成！访问地址: https://$DOMAIN"
 echo "📝 当前登录用户名: $BASIC_USER"
@@ -380,4 +486,3 @@ echo "📦 手动备份脚本: /home/n8n/backup.sh"
 echo "🗑️ 自动清理14天前备份脚本: /home/n8n/clean-backups.sh"
 echo "💡 手动回滚脚本: /home/n8n/restore-n8n.sh"
 echo "🚀 手动升级脚本: /home/n8n/upgrade-n8n.sh"
-echo "🔎 查看部署信息脚本: /home/n8n-auth/n8n-show-info.sh"
