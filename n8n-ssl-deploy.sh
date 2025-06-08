@@ -41,9 +41,24 @@ echo ""
 
 read -p "🤖 是否开启 N8N 自动更新？(yes/no): " AUTO_UPDATE
 
-# 卸载原生 nginx，避免冲突
-apt purge -y nginx nginx-common nginx-full || true
-apt autoremove -y
+# 🚨 检查并卸载系统自带 Nginx，防止冲突
+if systemctl list-units --type=service | grep -q nginx; then
+  echo "⚠️ 检测到系统已安装 Nginx，准备卸载..."
+  systemctl stop nginx
+  systemctl disable nginx
+
+  if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
+    apt purge -y nginx nginx-common nginx-core
+    apt autoremove -y
+  elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
+    yum remove -y nginx nginx-common nginx-core
+  elif [[ "$OS" == "amzn" ]]; then
+    yum remove -y nginx
+  fi
+
+  rm -rf /etc/nginx
+  echo "✅ 已卸载系统自带 Nginx，继续安装 OpenResty..."
+fi
 
 # 安装依赖
 export DEBIAN_FRONTEND=noninteractive
