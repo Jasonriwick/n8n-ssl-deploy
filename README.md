@@ -65,7 +65,7 @@
 ### 2. 下载并赋权
 
 ```bash
-curl -O https://github.com/Jasonriwick/n8n-ssl-deploy.sh
+curl -O https://raw.githubusercontent.com/Jasonriwick/n8n-ssl-deploy/main/n8n-ssl-deploy.sh
 chmod +x n8n-ssl-deploy.sh
 ```
 
