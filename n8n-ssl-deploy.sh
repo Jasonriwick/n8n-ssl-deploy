@@ -130,7 +130,8 @@ if ! grep -q "http2" $NGINX_CONF; then
 fi
 
 # 插入 GZIP 到 http { 内
-sed -i '/http {/a \
+if ! grep -q "gzip on;" /etc/nginx/nginx.conf; then
+  sed -i '/http {/a \
     gzip on;\
     gzip_disable "msie6";\
     gzip_vary on;\
@@ -139,7 +140,8 @@ sed -i '/http {/a \
     gzip_buffers 16 8k;\
     gzip_http_version 1.1;\
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\
-' /etc/nginx/nginx.conf
+  ' /etc/nginx/nginx.conf
+fi
 
 # 创建目录
 mkdir -p /home/n8n/n8n
