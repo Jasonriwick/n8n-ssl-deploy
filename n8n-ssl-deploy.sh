@@ -128,6 +128,18 @@ if ! grep -q "http2" $NGINX_CONF; then
   sed -i 's/listen 443 ssl;/listen 443 ssl http2;/' /etc/nginx/sites-available/default || true
 fi
 
+# 插入 GZIP 到 http { 内
+sed -i '/http {/a \
+    gzip on;\
+    gzip_disable "msie6";\
+    gzip_vary on;\
+    gzip_proxied any;\
+    gzip_comp_level 6;\
+    gzip_buffers 16 8k;\
+    gzip_http_version 1.1;\
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\
+' /etc/nginx/nginx.conf
+
 cat <<EOF >> /etc/nginx/nginx.conf
 
 gzip on;
