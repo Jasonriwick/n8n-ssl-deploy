@@ -55,7 +55,7 @@ BASIC_PASSWORD=${BASIC_PASSWORD:-admin123}
 echo ""
 read -p "🤖 是否开启 N8N 自动更新？(yes/no): " AUTO_UPDATE
 
-# 4. 安装依赖
+# 4. 安装必要依赖
 export DEBIAN_FRONTEND=noninteractive
 if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
   apt update
@@ -90,30 +90,33 @@ elif [[ "$OS" == "amzn" ]]; then
   systemctl start docker
 fi
 
-# 启用 Swap（小内存 VPS 必备）
-if [ $(free -m | awk '/^Mem:/{print $2}') -lt 2048 ]; then
-  fallocate -l 2G /swapfile
-  chmod 600 /swapfile
-  mkswap /swapfile
-  swapon /swapfile
-  echo '/swapfile none swap sw 0 0' >> /etc/fstab
-fi
+# 开局 nginx 只配置 80，方便 Certbot 申请证书
+cat > /etc/nginx/conf.d/n8n.conf <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
 
-# 配置 Fail2ban 防暴力破解
-cat > /etc/fail2ban/jail.d/nginx-http-auth.conf <<'EOF'
-[nginx-http-auth]
-enabled = true
-filter  = nginx-http-auth
-port    = http,https
-logpath = /var/log/nginx/error.log
-maxretry = 5
-findtime = 600
-bantime  = 1800
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
 EOF
-systemctl enable fail2ban
-systemctl start fail2ban
 
-# 创建 Node.js 后端认证服务
+systemctl enable nginx
+systemctl start nginx
+nginx -t && systemctl reload nginx
+
+# 准备 .well-known 目录
+mkdir -p /var/www/html/.well-known/acme-challenge
+
+# 5. 申请 SSL 证书
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
+
+# 6. 创建 Node.js 后端认证服务
 mkdir -p /home/n8n-auth
 cat > /home/n8n-auth/server.js <<'EOF'
 const express = require('express');
@@ -173,7 +176,7 @@ systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 5. 配置登录页面
+# 7. 登录页面
 mkdir -p /var/www/html
 cat > /var/www/html/login.html <<'EOF'
 <!DOCTYPE html>
@@ -199,7 +202,7 @@ cat > /var/www/html/login.html <<'EOF'
 </html>
 EOF
 
-# 登录页面样式
+# 登录页面 CSS
 cat > /var/www/html/login.css <<'EOF'
 body {
   background: linear-gradient(135deg, #1a1a2e, #16213e);
@@ -240,21 +243,8 @@ a {
 }
 EOF
 
-# 6. 配置 Nginx 反向代理
+# 8. 更新 Nginx 反向代理配置
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
 server {
     listen 443 ssl http2;
     server_name $DOMAIN;
@@ -292,11 +282,41 @@ server {
 }
 EOF
 
-# 检查 Nginx 配置
+# 重启 Nginx 生效配置
 nginx -t && systemctl reload nginx
 
-# 7. 申请 SSL 证书
-certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
+# 9. 配置 n8n 的 Docker Compose
+mkdir -p /home/n8n/n8n
+mkdir -p /home/n8n/n8ndata
+mkdir -p /home/n8n/backups
+chmod -R 777 /home/n8n
+
+cat > /home/n8n/docker-compose.yml <<EOF
+version: '3.8'
+services:
+  n8n:
+    image: n8nio/n8n
+    restart: always
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_HOST=$DOMAIN
+      - WEBHOOK_URL=https://$DOMAIN/
+      - GENERIC_TIMEZONE=Asia/Shanghai
+    volumes:
+      - /home/n8n/n8n:/home/node/.n8n
+      - /home/n8n/n8ndata:/data
+networks:
+  default:
+    external:
+      name: n8n-network
+EOF
+
+# 创建 Docker 网络（避免冲突）
+docker network create n8n-network || true
+
+# 启动 n8n 服务
+cd /home/n8n
+docker compose up -d
 
 # 10. 备份脚本 backup.sh
 cat > /home/n8n/backup.sh <<'EOF'
@@ -339,7 +359,7 @@ fi
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# 12. 手动升级 upgrade-n8n.sh
+# 手动升级 upgrade-n8n.sh
 cat > /home/n8n/upgrade-n8n.sh <<'EOF'
 #!/bin/bash
 bash /home/n8n/backup.sh
@@ -349,7 +369,7 @@ docker-compose up -d
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 13. 设置 Crontab 定时任务
+# 12. 设置 Crontab 定时任务（每天备份 + 清理，检测更新）
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
 
@@ -363,7 +383,8 @@ echo "✅ n8n 自定义登录部署完成！访问地址: https://$DOMAIN"
 echo "📝 登录用户名: $BASIC_USER"
 echo "📝 登录密码: $BASIC_PASSWORD"
 echo "🚀 自定义登录页面已启用，首次访问输入账号密码后进入 n8n。"
-echo "🔧 重置账号密码脚本: /home/n8n-auth/reset-credentials.sh"
-echo "📦 手动备份脚本: /home/n8n/backup.sh"
-echo "💡 手动回滚脚本: /home/n8n/restore-n8n.sh"
-echo "🚀 手动升级脚本: /home/n8n/upgrade-n8n.sh"
+echo "📦 自动备份脚本: /home/n8n/backup.sh"
+echo "🧹 自动清理脚本: /home/n8n/clean-backups.sh"
+echo "🚀 自动更新检测脚本: /home/n8n/check-update.sh"
+echo "🚀 自动升级脚本: /home/n8n/auto-upgrade.sh"
+echo "🔧 手动升级脚本: /home/n8n/upgrade-n8n.sh"
