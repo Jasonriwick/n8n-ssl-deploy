@@ -55,27 +55,17 @@ BASIC_PASSWORD=${BASIC_PASSWORD:-admin123}
 echo ""
 read -p "🤖 是否开启 N8N 自动更新？(yes/no): " AUTO_UPDATE
 
-# 4. 释放占用端口
-echo "🔧 检查并释放端口 80 和 443..."
-for port in 80 443; do
-  PIDS=$(lsof -i:$port -t || true)
-  if [ -n "$PIDS" ]; then
-    echo "⚠️ 检测到端口 $port 被占用，正在释放..."
-    kill -9 $PIDS
-  fi
-done
-
-# 5. 安装依赖
+# 4. 安装依赖
 if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
   apt update
   apt install -y curl wget ca-certificates gnupg2 lsb-release apt-transport-https \
     software-properties-common sudo unzip ufw cron docker.io docker-compose jq \
-    certbot python3-certbot-nginx fail2ban nodejs npm
+    certbot python3-certbot-nginx fail2ban nodejs npm lsof
 elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
   yum update -y
   yum install -y epel-release
   yum install -y curl wget ca-certificates gnupg2 lsb-release unzip firewalld docker jq \
-    certbot python3-certbot-nginx cronie fail2ban nodejs npm
+    certbot python3-certbot-nginx cronie fail2ban nodejs npm lsof
 fi
 
 # Docker 启动
@@ -99,14 +89,23 @@ else
   echo "⚠️ 检测到 Swap 已存在，跳过创建。"
 fi
 
-# 6. Nginx 安装
+# ⚡️ 安装 Docker Compose V2
+if ! docker compose version >/dev/null 2>&1; then
+  echo "⚠️ 检测到 Docker Compose v2 不存在，安装 docker-compose-plugin..."
+  if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
+    apt install -y docker-compose-plugin
+  elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
+    yum install -y docker-compose-plugin
+  fi
+fi
+
+# 5. 安装与配置 Nginx
 apt install -y nginx || yum install -y nginx
 systemctl enable nginx
 systemctl start nginx
 
-# 7. 登录认证微服务部署
+# 6. 登录认证微服务部署
 mkdir -p /home/n8n-auth
-npm install express cookie-parser body-parser crypto
 
 cat > /home/n8n-auth/server.js <<'EOF'
 const express = require('express');
@@ -128,7 +127,7 @@ app.use(cookieParser());
 app.post('/auth', (req, res) => {
   const { username, password } = req.body;
   if (sha256(username) === user && sha256(password) === passwordHash) {
-    res.cookie('n8n_auth', 'valid', { httpOnly: true });
+    res.cookie('n8n_auth', 'valid', { httpOnly: true, secure: true });
     res.redirect('/');
   } else {
     res.status(401).send('用户名或密码错误！');
@@ -138,13 +137,29 @@ app.post('/auth', (req, res) => {
 app.listen(3000);
 EOF
 
-npm install express body-parser cookie-parser crypto --prefix /home/n8n-auth
+cd /home/n8n-auth
+npm init -y
+npm install express cookie-parser body-parser crypto
 
-# 生成 Hash
+# 保存用户信息
 HASHED_USER=$(echo -n "$BASIC_USER" | openssl dgst -sha256 | awk '{print $2}')
 HASHED_PASS=$(echo -n "$BASIC_PASSWORD" | openssl dgst -sha256 | awk '{print $2}')
+echo "$HASHED_USER" > /home/n8n-auth/.user
+echo "$HASHED_PASS" > /home/n8n-auth/.password
 
-# 登录页面部署
+echo "DOMAIN=$DOMAIN" > /home/n8n-auth/.env
+
+echo "N8N_USER=$HASHED_USER" >> /home/n8n-auth/.env
+echo "N8N_PASSWORD=$HASHED_PASS" >> /home/n8n-auth/.env
+
+# PM2 安装与服务管理
+npm install -g pm2
+pm2 start /home/n8n-auth/server.js --name n8n-auth --env /home/n8n-auth/.env
+pm2 save
+pm2 startup systemd -u root --hp /root
+
+# 7. 登录页面部署
+mkdir -p /var/www/html
 cat > /var/www/html/login.html <<'EOF'
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -218,8 +233,8 @@ server {
 
   location /auth {
     proxy_pass http://127.0.0.1:3000;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
   }
 
   location /login.html {
@@ -231,37 +246,36 @@ server {
   }
 
   location / {
-    if (\$cookie_n8n_auth != "valid") {
+    if ($cookie_n8n_auth != "valid") {
       return 302 /login.html;
     }
     proxy_pass http://localhost:5678;
-    proxy_set_header Host \$host;
-    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection upgrade;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
   }
 }
 EOF
 
 ln -s /etc/nginx/sites-available/n8n.conf /etc/nginx/sites-enabled/
-rm /etc/nginx/sites-enabled/default
+rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 
-# 9. n8n Docker 部署
+# 9. n8n Docker Compose 配置
 mkdir -p /home/n8n/n8n
 mkdir -p /home/n8n/n8ndata
 mkdir -p /home/n8n/backups
 chmod -R 777 /home/n8n
 
-echo "version: '3.8'" > /home/n8n/docker-compose.yml
-cat >> /home/n8n/docker-compose.yml <<EOF
+cat > /home/n8n/docker-compose.yml <<EOF
+version: '3.8'
 services:
   n8n:
     image: n8nio/n8n
     restart: always
-    ports: []
     environment:
       - N8N_BASIC_AUTH_ACTIVE=false
       - N8N_HOST=$DOMAIN
@@ -275,10 +289,7 @@ networks:
     name: n8n-network
 EOF
 
-# 启动 Docker 网络
-(docker network create n8n-network || true)
-
-# 启动 n8n
+docker network create n8n-network || true
 cd /home/n8n
 docker compose up -d
 
@@ -387,7 +398,7 @@ HASHED_USER=$(echo -n "$NEW_USER" | openssl dgst -sha256 | awk '{print $2}')
 HASHED_PASS=$(echo -n "$NEW_PASS" | openssl dgst -sha256 | awk '{print $2}')
 echo $HASHED_USER > /home/n8n-auth/.user
 echo $HASHED_PASS > /home/n8n-auth/.password
-systemctl restart n8n-auth
+pm2 restart n8n-auth
 systemctl reload nginx
 echo "✅ 账号密码重置成功！"
 EOF
@@ -396,19 +407,17 @@ chmod +x /home/n8n-auth/reset-credentials.sh
 # 18. 查看账号密码脚本
 cat > /home/n8n-auth/view-credentials.sh <<'EOF'
 #!/bin/bash
-DOMAIN_FILE="/home/n8n-auth/.domain"
 USER_FILE="/home/n8n-auth/.user"
 PASS_FILE="/home/n8n-auth/.password"
 
-DOMAIN=$(cat $DOMAIN_FILE)
 BASIC_USER=$(cat $USER_FILE)
 BASIC_PASSWORD=$(cat $PASS_FILE)
 
 echo ""
 echo "✅ 当前 n8n 部署信息"
 echo "🌐 访问地址: https://$DOMAIN"
-echo "📝 登录用户名: (SHA256) $BASIC_USER"
-echo "📝 登录密码: (SHA256) $BASIC_PASSWORD"
+echo "📝 登录用户名 (SHA256): $BASIC_USER"
+echo "📝 登录密码 (SHA256): $BASIC_PASSWORD"
 EOF
 chmod +x /home/n8n-auth/view-credentials.sh
 
