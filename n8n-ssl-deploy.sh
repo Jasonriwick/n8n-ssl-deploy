@@ -65,7 +65,8 @@ if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
   systemctl enable docker
   systemctl start docker
   ufw allow 22/tcp
-  ufw allow 80,443/tcp
+  ufw allow 80/tcp
+  ufw allow 443/tcp
   ufw --force enable
 
 elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
@@ -77,9 +78,9 @@ elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" =
   systemctl start docker
   systemctl enable firewalld
   systemctl start firewalld
-  firewall-cmd --permanent --add-service=http
-  firewall-cmd --permanent --add-service=https
   firewall-cmd --permanent --add-port=22/tcp
+  firewall-cmd --permanent --add-port=80/tcp
+  firewall-cmd --permanent --add-port=443/tcp
   firewall-cmd --reload
 
 elif [[ "$OS" == "amzn" ]]; then
@@ -90,7 +91,10 @@ elif [[ "$OS" == "amzn" ]]; then
   systemctl start docker
 fi
 
-# 开局 nginx 只配置 80，方便 Certbot 申请证书
+# 创建临时 HTTP 配置申请证书
+mkdir -p /var/www/html/.well-known/acme-challenge
+chmod -R 777 /var/www/html
+
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 80;
@@ -110,14 +114,13 @@ systemctl enable nginx
 systemctl start nginx
 nginx -t && systemctl reload nginx
 
-# 准备 .well-known 目录
-mkdir -p /var/www/html/.well-known/acme-challenge
-
 # 5. 申请 SSL 证书
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 # 6. 创建 Node.js 后端认证服务
 mkdir -p /home/n8n-auth
+chmod -R 777 /home/n8n-auth
+
 cat > /home/n8n-auth/server.js <<'EOF'
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -154,7 +157,7 @@ cd /home/n8n-auth
 npm init -y
 npm install express body-parser cookie-parser crypto
 
-# 启动认证服务
+# 设置 systemd 管理认证服务
 cat > /etc/systemd/system/n8n-auth.service <<EOF
 [Unit]
 Description=N8N Login Auth Service
@@ -177,7 +180,6 @@ systemctl enable n8n-auth
 systemctl start n8n-auth
 
 # 7. 登录页面
-mkdir -p /var/www/html
 cat > /var/www/html/login.html <<'EOF'
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -202,7 +204,6 @@ cat > /var/www/html/login.html <<'EOF'
 </html>
 EOF
 
-# 登录页面 CSS
 cat > /var/www/html/login.css <<'EOF'
 body {
   background: linear-gradient(135deg, #1a1a2e, #16213e);
@@ -282,7 +283,6 @@ server {
 }
 EOF
 
-# 重启 Nginx 生效配置
 nginx -t && systemctl reload nginx
 
 # 9. 配置 n8n 的 Docker Compose
@@ -311,14 +311,11 @@ networks:
       name: n8n-network
 EOF
 
-# 创建 Docker 网络（避免冲突）
 docker network create n8n-network || true
-
-# 启动 n8n 服务
 cd /home/n8n
 docker compose up -d
 
-# 10. 备份脚本 backup.sh
+# 10. 自动备份 + 自动清理 + 自动更新
 cat > /home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%F_%T)
@@ -326,14 +323,12 @@ tar czf /home/n8n/backups/n8n_backup_$DATE.tar.gz -C /home/n8n/n8n . -C /home/n8
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 自动清理过期备份 clean-backups.sh
 cat > /home/n8n/clean-backups.sh <<'EOF'
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +14 -exec rm -f {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
-# 11. 检查更新脚本 check-update.sh
 cat > /home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 LATEST=$(curl -s https://hub.docker.com/v2/repositories/n8nio/n8n/tags | jq -r '.results[0].name')
@@ -346,7 +341,6 @@ fi
 EOF
 chmod +x /home/n8n/check-update.sh
 
-# 自动升级 auto-upgrade.sh
 cat > /home/n8n/auto-upgrade.sh <<'EOF'
 #!/bin/bash
 if [ -f /home/n8n/update.flag ]; then
@@ -359,7 +353,6 @@ fi
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# 手动升级 upgrade-n8n.sh
 cat > /home/n8n/upgrade-n8n.sh <<'EOF'
 #!/bin/bash
 bash /home/n8n/backup.sh
@@ -369,7 +362,7 @@ docker-compose up -d
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 12. 设置 Crontab 定时任务（每天备份 + 清理，检测更新）
+# 定时任务 Crontab
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
 
