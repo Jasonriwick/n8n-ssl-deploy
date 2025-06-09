@@ -41,6 +41,83 @@
 | 🎨 支持界面自定义        | 自定义登录页面、CSS样式      |
 | 🌍 多系统兼容           | 支持 Ubuntu 20+/Debian 10+/CentOS 8+/Amazon Linux 2 |
 
-...（内容太长，中间省略）...
+---
+
+## 🧐 设计理念
+
+- **安全优先**: HTTPS 加密、认证保护、防暴力破解
+- **稳定可靠**: 自动备份、自动更新、异常恢复机制
+- **性能优化**: HTTP/2 与 GZIP 加速访问
+- **低运维费用**: 一键式安装，基本零维护
+- **专业体验**: 品牌定制登录界面，提升信任感
+- **自由定制**: 支持界面、自定义 CSS 全面修改
+
+---
+
+## ⚙️ 安装部署指南
+
+### 系统要求
+
+- 操作系统: Ubuntu 20.04+/Debian 10+/CentOS 8+/Amazon Linux 2
+- 硬件配置: 最低 2GB 内存（推荐 4GB+）
+- 基础条件: 域名已解析到服务器 IP
+- 网络要求: 80 、443 端口开放
+
+### 快速部署
+
+```bash
+# 下载脚本
+curl -O https://raw.githubusercontent.com/Jasonriwick/n8n-ssl-deploy/main/n8n-ssl-deploy.sh
+
+# 添加执行权限
+chmod +x n8n-ssl-deploy.sh
+
+# 运行部署
+./n8n-ssl-deploy.sh
+```
+
+安装过程将提示输入：
+
+- 🌐 域名
+- 📧 SSL 邮箱
+- 👤 登录用户名 (admin)
+- 🔒 登录密码 (admin123)
+- 🤖 是否开启自动更新 (yes/no)
+
+---
+
+## 📁 文件与目录结构
+
+```
+/home/n8n/
+├── n8n/                        # 📁 n8n 主目录
+│   ├── docker-compose.yml       # 🚢 Docker Compose 配置文件
+│   ├── .env                     # 🌍 环境变量配置 (账户、密码、Webhook等)
+│   ├── data/                    # 🛢️ 持久化存储目录
+│   │   ├── .n8n/                # 📦 n8n 配置、流程、密钥存储
+│   │   └── database.sqlite      # 🗄️ SQLite 主数据库
+│   ├── nginx/                   # 🌐 Nginx 反向代理配置
+│   │   ├── nginx.conf           # 📄 Nginx 配置文件
+│   │   └── ssl/                 # 🔒 SSL 证书存放目录
+│   ├── custom/                  # 🎨 前端界面定制目录
+│   │   ├── static/              # CSS、JS 静态资源（可自定义）
+│   │   └── views/               # 登录页模板文件（可自定义）
+├── backup/                      # 🗂️ 自动备份目录
+└── logs/                         # 📜 容器运行日志目录
+```
+
+### 📂 关键自定义路径
+
+| 路径 | 描述 |
+|:---|:---|
+| `/home/n8n/n8n/custom/views/login.html` | 登录页面 HTML 模板，可自定义 Logo、文案 |
+| `/home/n8n/n8n/custom/static/custom.css` | 自定义 CSS 样式文件，修改页面颜色、按钮样式等 |
+| `/home/n8n/n8n/.env` | 账户名、密码、环境变量设置位置 |
+| `/home/n8n/backup/` | 每日自动备份存放目录 |
+| `/home/n8n/n8n/data/database.sqlite` | 主数据库文件，存储所有流程数据 |
+| `/home/n8n/n8n/nginx/ssl/` | SSL证书 `cert.pem`、`key.pem` 文件位置 |
+| `/home/n8n/logs/` | 日志输出目录 |
+
+...（其余保持不变）...
 
 📝 **即刻部署，开启你的 n8n 自动化之旅！**
