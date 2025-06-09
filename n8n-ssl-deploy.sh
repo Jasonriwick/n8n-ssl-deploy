@@ -61,59 +61,34 @@ if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
   apt update
   apt install -y curl wget ca-certificates gnupg2 lsb-release apt-transport-https \
     software-properties-common sudo unzip ufw cron docker.io docker-compose jq \
-    certbot python3-certbot nginx fail2ban openssl nodejs npm lsof
+    certbot python3-certbot-nginx nginx fail2ban openssl nodejs npm lsof
+  systemctl enable docker
+  systemctl start docker
+  ufw allow 22/tcp
+  ufw allow 80,443/tcp
+  ufw --force enable
+
 elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" ]]; then
   yum update -y
   yum install -y epel-release
   yum install -y curl wget ca-certificates gnupg2 lsb-release unzip firewalld docker jq \
-    certbot python3-certbot nginx fail2ban openssl nodejs npm lsof
+    certbot python3-certbot-nginx nginx fail2ban openssl nodejs npm lsof
+  systemctl enable docker
+  systemctl start docker
+  systemctl enable firewalld
+  systemctl start firewalld
+  firewall-cmd --permanent --add-service=http
+  firewall-cmd --permanent --add-service=https
+  firewall-cmd --permanent --add-port=22/tcp
+  firewall-cmd --reload
+
 elif [[ "$OS" == "amzn" ]]; then
   yum update -y
   amazon-linux-extras enable nginx1 docker
-  yum install -y docker unzip certbot python3-certbot nginx jq fail2ban openssl nodejs npm lsof
+  yum install -y docker unzip certbot python3-certbot-nginx nginx jq fail2ban openssl nodejs npm lsof
+  systemctl enable docker
+  systemctl start docker
 fi
-
-# 启动 Docker
-systemctl enable docker
-systemctl start docker
-
-# 配置防火墙，只开 22 80 443
-if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-  ufw allow 22/tcp
-  ufw allow 80/tcp
-  ufw allow 443/tcp
-  ufw --force enable
-elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" || "$OS" == "rhel" || "$OS" == "amzn" ]]; then
-  systemctl enable firewalld
-  systemctl start firewalld
-  firewall-cmd --permanent --add-port=22/tcp
-  firewall-cmd --permanent --add-service=http
-  firewall-cmd --permanent --add-service=https
-  firewall-cmd --reload
-fi
-
-# 启用 Swap（小内存 VPS 必备）
-if [ $(free -m | awk '/^Mem:/{print $2}') -lt 2048 ]; then
-  fallocate -l 2G /swapfile
-  chmod 600 /swapfile
-  mkswap /swapfile
-  swapon /swapfile
-  echo '/swapfile none swap sw 0 0' >> /etc/fstab
-fi
-
-# 配置 Fail2ban 防暴力破解
-cat > /etc/fail2ban/jail.d/nginx-http-auth.conf <<'EOF'
-[nginx-http-auth]
-enabled = true
-filter  = nginx-http-auth
-port    = http,https
-logpath = /var/log/nginx/error.log
-maxretry = 5
-findtime = 600
-bantime  = 1800
-EOF
-systemctl enable fail2ban
-systemctl start fail2ban
 
 # 开局 nginx 只配置 80，方便 Certbot 申请证书
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
@@ -308,6 +283,7 @@ server {
 }
 EOF
 
+# 重启 Nginx 生效配置
 nginx -t && systemctl reload nginx
 
 # 9. 配置 n8n 的 Docker Compose
@@ -336,17 +312,10 @@ EOF
 
 docker network create n8n-network || true
 
-# 检测 docker compose 版本
 cd /home/n8n
-if command -v docker compose &> /dev/null; then
-  echo "✅ 使用 docker compose"
-  docker compose -f /home/n8n/docker-compose.yml up -d
-else
-  echo "✅ 使用 docker-compose"
-  docker-compose -f /home/n8n/docker-compose.yml up -d
-fi
+docker compose up -d
 
-# 10. 备份、清理、更新脚本
+# 10. 备份脚本 backup.sh
 cat > /home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%F_%T)
@@ -354,12 +323,14 @@ tar czf /home/n8n/backups/n8n_backup_$DATE.tar.gz -C /home/n8n/n8n . -C /home/n8
 EOF
 chmod +x /home/n8n/backup.sh
 
+# 自动清理过期备份 clean-backups.sh
 cat > /home/n8n/clean-backups.sh <<'EOF'
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +14 -exec rm -f {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
+# 检查更新 check-update.sh
 cat > /home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 LATEST=$(curl -s https://hub.docker.com/v2/repositories/n8nio/n8n/tags | jq -r '.results[0].name')
@@ -372,40 +343,30 @@ fi
 EOF
 chmod +x /home/n8n/check-update.sh
 
+# 自动升级 auto-upgrade.sh
 cat > /home/n8n/auto-upgrade.sh <<'EOF'
 #!/bin/bash
 if [ -f /home/n8n/update.flag ]; then
   bash /home/n8n/backup.sh
-  if command -v docker compose &> /dev/null; then
-    docker compose pull
-    docker compose down
-    docker compose up -d
-  else
-    docker-compose pull
-    docker-compose down
-    docker-compose up -d
-  fi
+  docker-compose pull
+  docker-compose down
+  docker-compose up -d
   rm -f /home/n8n/update.flag
 fi
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
+# 手动升级 upgrade-n8n.sh
 cat > /home/n8n/upgrade-n8n.sh <<'EOF'
 #!/bin/bash
 bash /home/n8n/backup.sh
-if command -v docker compose &> /dev/null; then
-  docker compose pull
-  docker compose down
-  docker compose up -d
-else
-  docker-compose pull
-  docker-compose down
-  docker-compose up -d
-fi
+docker-compose pull
+docker-compose down
+docker-compose up -d
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 11. Crontab 自动化
+# 12. 设置 Crontab 定时任务
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
 
@@ -418,4 +379,11 @@ echo ""
 echo "✅ n8n 自定义登录部署完成！访问地址: https://$DOMAIN"
 echo "📝 登录用户名: $BASIC_USER"
 echo "📝 登录密码: $BASIC_PASSWORD"
-echo "🚀 自定义登录页面已启用，首次访问输入账号密码后进入 n8n。"
+echo "📦 自动备份脚本: /home/n8n/backup.sh"
+echo "🧹 自动清理脚本: /home/n8n/clean-backups.sh"
+echo "🚀 自动更新检测脚本: /home/n8n/check-update.sh"
+echo "🚀 自动升级脚本: /home/n8n/auto-upgrade.sh"
+echo "🔧 手动升级脚本: /home/n8n/upgrade-n8n.sh"
+echo "📅 定时任务已设置：每天自动备份+清理+更新检查"
+echo "🔐 登录认证服务 systemd 已安装并自启动"
+echo "🌐 登录页面: https://$DOMAIN/login.html"
