@@ -2,7 +2,7 @@
 
 set -e
 
-echo "🔧 开始 N8N + Docker Nginx + SSL + 自定义登录页 (Node.js Express认证) 安全强化版一键部署..."
+echo "🔧 开始 John 一键部署版 N8N (Docker + Nginx + SSL + 登录认证 + 动效登录页) ..."
 
 # 检测系统信息
 if [ -f /etc/os-release ]; then
@@ -82,7 +82,7 @@ elif [[ "$OS" == "amzn" ]]; then
   yum install -y docker unzip certbot python3-certbot-nginx nginx jq fail2ban openssl nodejs npm lsof
 fi
 
-# 检测 Docker 是否需要安装
+# 安装/升级 Docker 和 Docker Compose
 INSTALL_DOCKER=false
 if ! command -v docker &> /dev/null; then
   INSTALL_DOCKER=true
@@ -110,7 +110,7 @@ if [ "$INSTALL_DOCKER" = true ]; then
   systemctl start docker
 fi
 
-# 检测 docker compose
+# 检测 Docker Compose
 if docker compose version &> /dev/null; then
   DOCKER_COMPOSE_CMD="docker compose"
 else
@@ -124,7 +124,7 @@ fi
 
 echo "✅ Docker Compose 命令: $DOCKER_COMPOSE_CMD"
 
-# nginx 配置
+# Nginx 配置
 mkdir -p /var/www/html/.well-known/acme-challenge
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
@@ -209,7 +209,7 @@ systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 登录页面
+# 登录页面 + CSS 动效
 mkdir -p /var/www/html
 chmod -R 777 /var/www/html
 cat > /var/www/html/login.html <<'EOF'
@@ -217,43 +217,56 @@ cat > /var/www/html/login.html <<'EOF'
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>N8N 登录</title>
+<title>欢迎使用 John 一键部署版 N8N</title>
 <link rel="stylesheet" href="/login.css">
 </head>
 <body>
 <div class="login-container">
-  <h1>Welcome to N8N</h1>
+  <h1>欢迎使用 John 一键部署版 N8N</h1>
   <form method="post" action="/auth">
     <input type="text" name="username" placeholder="用户名" required>
     <input type="password" name="password" placeholder="密码" required>
     <button type="submit">登录</button>
   </form>
   <div class="footer">
-    <a href="https://github.com">Powered by N8N</a>
+    <a href="https://github.com/Jasonriwick/n8n-ssl-deploy">Powered by JOHN</a>
   </div>
 </div>
+<script src="https://cdn.jsdelivr.net/gh/VincentGarreau/particles.js/particles.min.js"></script>
+<script>
+  particlesJS.load('particles-js', 'particles.json', function() {
+    console.log('particles.js loaded');
+  });
+</script>
 </body>
 </html>
 EOF
 
 cat > /var/www/html/login.css <<'EOF'
 body {
+  margin: 0;
+  padding: 0;
   background: linear-gradient(135deg, #1a1a2e, #16213e);
   color: white;
-  font-family: Arial, sans-serif;
+  font-family: 'Arial', sans-serif;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-size: cover;
 }
 .login-container {
-  width: 300px;
-  margin: 10% auto;
-  padding: 30px;
+  width: 320px;
+  padding: 40px;
   background: rgba(255, 255, 255, 0.1);
   border-radius: 10px;
   text-align: center;
+  backdrop-filter: blur(10px);
 }
 input {
-  width: 90%;
+  width: 100%;
   padding: 10px;
-  margin: 10px 0;
+  margin: 15px 0;
   border: none;
   border-radius: 5px;
 }
@@ -265,6 +278,7 @@ button {
   border-radius: 5px;
   color: white;
   font-weight: bold;
+  cursor: pointer;
 }
 .footer {
   margin-top: 20px;
@@ -276,7 +290,7 @@ a {
 }
 EOF
 
-# Nginx 更新配置
+# Nginx 443 配置更新
 cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 443 ssl http2;
@@ -317,16 +331,17 @@ EOF
 
 nginx -t && systemctl reload nginx
 
-# n8n docker compose
+# n8n Docker Compose 配置
 mkdir -p /home/n8n/n8n /home/n8n/n8ndata /home/n8n/backups
 chmod -R 777 /home/n8n
 
 cat > /home/n8n/docker-compose.yml <<EOF
-version: '3.8'
 services:
   n8n:
     image: n8nio/n8n
     restart: always
+    ports:
+      - "5678:5678"
     environment:
       - N8N_BASIC_AUTH_ACTIVE=false
       - N8N_HOST=$DOMAIN
@@ -335,18 +350,13 @@ services:
     volumes:
       - /home/n8n/n8n:/home/node/.n8n
       - /home/n8n/n8ndata:/data
-networks:
-  default:
-    external:
-      name: n8n-network
 EOF
 
-docker network create n8n-network || true
-
 cd /home/n8n
+$DOCKER_COMPOSE_CMD down || true
 $DOCKER_COMPOSE_CMD up -d
 
-# 备份 + 自动更新脚本
+# 备份脚本
 cat > /home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%F_%T)
@@ -354,12 +364,14 @@ tar czf /home/n8n/backups/n8n_backup_$DATE.tar.gz -C /home/n8n/n8n . -C /home/n8
 EOF
 chmod +x /home/n8n/backup.sh
 
+# 自动清理过期备份
 cat > /home/n8n/clean-backups.sh <<'EOF'
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +14 -exec rm -f {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
+# 自动更新检测脚本
 cat > /home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 LATEST=$(curl -s https://hub.docker.com/v2/repositories/n8nio/n8n/tags | jq -r '.results[0].name')
@@ -372,19 +384,30 @@ fi
 EOF
 chmod +x /home/n8n/check-update.sh
 
+# 自动升级脚本
 cat > /home/n8n/auto-upgrade.sh <<'EOF'
 #!/bin/bash
 if [ -f /home/n8n/update.flag ]; then
   bash /home/n8n/backup.sh
-  $DOCKER_COMPOSE_CMD pull
-  $DOCKER_COMPOSE_CMD down
-  $DOCKER_COMPOSE_CMD up -d
+  docker compose pull
+  docker compose down
+  docker compose up -d
   rm -f /home/n8n/update.flag
 fi
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# Crontab
+# 手动升级脚本
+cat > /home/n8n/upgrade-n8n.sh <<'EOF'
+#!/bin/bash
+bash /home/n8n/backup.sh
+docker compose pull
+docker compose down
+docker compose up -d
+EOF
+chmod +x /home/n8n/upgrade-n8n.sh
+
+# 定时任务：每天备份，清理，更新检测
 (crontab -l 2>/dev/null; echo "0 2 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/clean-backups.sh") | crontab -
 if [ "$AUTO_UPDATE" == "yes" ]; then
@@ -405,3 +428,4 @@ echo "🔧 手动升级脚本: /home/n8n/upgrade-n8n.sh"
 echo "📅 定时任务已设置：每天自动备份+清理+更新检查"
 echo "🔐 登录认证服务 systemd 已安装并自启动"
 echo "🌐 登录页面: https://$DOMAIN/login.html"
+echo "⚡ Powered by John 一键部署！🚀"
