@@ -1,0 +1,26 @@
+
+version: "3.8"
+
+services:
+  n8n:
+    image: n8nio/n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=Asia/Shanghai
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - WEBHOOK_URL=https://${DOMAIN_NAME}/
+      - VUE_APP_URL_BASE_API=https://${DOMAIN_NAME}/
+    volumes:
+      - ./data:/home/node/.n8n
+      - ./custom/static:/usr/local/lib/node_modules/n8n/static
+      - ./custom/views:/usr/local/lib/node_modules/n8n/views
+    networks:
+      - n8n_network
+
+networks:
+  n8n_network:
+    driver: bridge

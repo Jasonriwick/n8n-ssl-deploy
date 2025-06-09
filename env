@@ -1,0 +1,7 @@
+
+# ========== Basic Authentication ==========
+N8N_USER=admin
+N8N_PASSWORD=admin123
+
+# ========== Domain Setting ==========
+DOMAIN_NAME=yourdomain.com
