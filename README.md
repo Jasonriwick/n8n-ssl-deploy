@@ -5,7 +5,7 @@
 适合个人开发者、中小型团队、自建自动化平台用户。
 
 <p align="center">
-  <img src="https://neveitaliafurniture.com/wp-content/uploads/2025/06/微信图片_20250609153913.png" alt="John N8N 部署示意图" width="600">
+  <img src="https://neveitaliafurniture.com/wp-content/uploads/2025/06/微信图片_20250609153913.png" alt="John N8N 部署示意图" width="1200">
 </p>
 
 
