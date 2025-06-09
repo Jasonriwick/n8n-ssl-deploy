@@ -4,7 +4,7 @@
 
 适合个人开发者、中小型团队、自建自动化平台用户。
 
-![Uploading 60731a99e7d69561b6442e9bf77c47a.png…]()
+https://neveitaliafurniture.com/wp-content/uploads/2025/06/微信图片_20250609153913.png
 
 ---
 
