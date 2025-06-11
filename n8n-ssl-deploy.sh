@@ -49,37 +49,53 @@ BASIC_PASSWORD=${BASIC_PASSWORD:-admin123}
 echo ""
 read -p "🤖 是否开启自动更新？(yes/no): " AUTO_UPDATE
 
-# 检查并升级 Node.js
+# 🧪 检查并升级 Node.js
 echo "🧪 检查 Node.js 版本..." | tee -a "$LOG_FILE"
 NODE_VERSION=$(node -v 2>/dev/null | sed 's/v//')
 NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
 
-# 最新版本主版本号（从官网获取）
-LATEST_MAJOR=$(curl -s https://nodejs.org/dist/index.json | jq '.[0].version' | sed 's/\"v\([0-9]*\).*/\1/')
+# 从官网获取最新版本主版本号
+LATEST_MAJOR=$(curl -s https://nodejs.org/dist/index.json | jq '.[0].version' | sed 's/"v\([0-9]*\).*/\1/')
 
 if [ -z "$NODE_VERSION" ] || [ "$NODE_MAJOR" -lt "$LATEST_MAJOR" ]; then
-  echo "🧹 发现旧版 Node.js（当前: v$NODE_VERSION, 最新: v$LATEST_MAJOR），准备清除并安装最新版..." | tee -a "$LOG_FILE"
+  echo "🧹 发现旧版 Node.js（当前: v${NODE_VERSION:-none}, 最新: v$LATEST_MAJOR），准备清除并安装最新版…" | tee -a "$LOG_FILE"
 
-  # 清理旧 Node.js、npm 和 libnode-dev（防止冲突）
-  apt purge -y nodejs npm libnode-dev || true
+  # 强制卸载所有冲突版本
+  apt purge -y nodejs npm libnode-dev || yum remove -y nodejs npm || dnf remove -y nodejs npm || true
+  dpkg -r --force-all libnode-dev >/dev/null 2>&1 || true
   apt autoremove -y || true
 
-  # 添加最新版 Node.js 源并安装
+  # 安装最新版 Node.js
   curl -fsSL https://deb.nodesource.com/setup_current.x | bash -
-  apt install -y nodejs || yum install -y nodejs || dnf install -y nodejs
+  if command -v apt &>/dev/null; then
+    apt install -y nodejs
+  elif command -v yum &>/dev/null; then
+    yum install -y nodejs
+  elif command -v dnf &>/dev/null; then
+    dnf install -y nodejs
+  else
+    echo "❌ 无法安装 Node.js，请手动安装！" | tee -a "$LOG_FILE"
+    exit 1
+  fi
 else
-  echo "✅ Node.js 已是最新版 v$NODE_VERSION" | tee -a "$LOG_FILE"
+  echo "✅ Node.js 已是最新版，当前版本：v$NODE_VERSION" | tee -a "$LOG_FILE"
 fi
 
-# 显示版本
+# 安装成功验证
+if ! command -v node &>/dev/null; then
+  echo "❌ Node.js 安装失败，请检查服务器环境。" | tee -a "$LOG_FILE"
+  exit 1
+fi
+
+# 输出版本信息
 echo "✅ 当前 Node.js: $(node -v)" | tee -a "$LOG_FILE"
 echo "✅ 当前 npm: $(npm -v)" | tee -a "$LOG_FILE"
 
-# 安装通用依赖
-echo "📦 安装依赖..." | tee -a "$LOG_FILE"
+# 📦 安装通用依赖
+echo "📦 安装通用依赖…" | tee -a "$LOG_FILE"
 if command -v apt &>/dev/null; then
-  apt update -y && apt install -y \
-    curl wget gnupg2 ca-certificates sudo unzip jq lsof \
+  apt update -y
+  apt install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
     nginx certbot python3-certbot-nginx ufw cron software-properties-common
 elif command -v yum &>/dev/null; then
   yum install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
@@ -87,6 +103,9 @@ elif command -v yum &>/dev/null; then
 elif command -v dnf &>/dev/null; then
   dnf install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
     nginx certbot python3-certbot-nginx ufw cronie
+else
+  echo "❌ 无支持的包管理器，请手动安装依赖。" | tee -a "$LOG_FILE"
+  exit 1
 fi
 
 # 启动并设置 Nginx 自启动
