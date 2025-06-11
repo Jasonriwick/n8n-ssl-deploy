@@ -81,7 +81,8 @@ health_check() {
     echo "❌ 多次检测失败，开始自修复..." | tee -a "$LOG_FILE"
     nginx -t || echo "⚠️ Nginx 配置异常" | tee -a "$LOG_FILE"
     systemctl restart nginx || true
-    docker compose down && docker compose up -d || true
+    docker compose down || docker-compose down
+    docker compose up -d || docker-compose up -d
     sleep 5
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://$DOMAIN || echo "000")
     if [[ "$STATUS" == "200" || "$STATUS" == "302" ]]; then
@@ -89,9 +90,9 @@ health_check() {
     else
       echo "🚨 修复失败，尝试回滚至最近备份..." | tee -a "$LOG_FILE"
       if [ -f /home/n8n/backups/n8n_backup_latest.tar.gz ]; then
-        docker compose down
+        docker compose down || docker-compose down
         tar -xzf /home/n8n/backups/n8n_backup_latest.tar.gz -C /home/n8n/n8n
-        docker compose up -d
+        docker compose up -d || docker-compose up -d
         STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://$DOMAIN || echo "000")
         if [[ "$STATUS" == "200" || "$STATUS" == "302" ]]; then
           echo "✅ 回滚成功！网站恢复正常。" | tee -a "$LOG_FILE"
@@ -105,25 +106,24 @@ health_check() {
   fi
 }
 
-# 安装 Node.js（自动检测最新版 LTS）
+# 安装 Node.js（如未安装）
 install_nodejs() {
-  echo "🧩 正在安装最新 LTS 版 Node.js ..." | tee -a "$LOG_FILE"
-  curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-  apt-get install -y nodejs || yum install -y nodejs || dnf install -y nodejs
+  if ! command -v node &>/dev/null; then
+    echo "🧩 正在安装最新 LTS 版 Node.js ..." | tee -a "$LOG_FILE"
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+    apt-get install -y nodejs || yum install -y nodejs || dnf install -y nodejs
+  else
+    echo "🟢 已检测到 Node.js，跳过安装。" | tee -a "$LOG_FILE"
+  fi
 }
 
-# 安装 Docker & Docker Compose
+# 安装 Docker & Docker Compose（支持新版与旧版兼容）
 install_docker() {
   echo "📦 安装 Docker 和 Docker Compose ..." | tee -a "$LOG_FILE"
   if ! command -v docker &>/dev/null; then
     curl -fsSL https://get.docker.com | bash
   fi
-  if ! docker --version | grep -q "version"; then
-    echo "⚠️ Docker 安装失败，请检查网络或安装脚本是否可用。" | tee -a "$LOG_FILE"
-    exit 1
-  fi
-
-  if ! docker compose version &>/dev/null; then
+  if ! docker compose version &>/dev/null && ! docker-compose version &>/dev/null; then
     echo "🔄 安装 Docker Compose 插件" | tee -a "$LOG_FILE"
     mkdir -p ~/.docker/cli-plugins
     curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) \
@@ -132,7 +132,7 @@ install_docker() {
   fi
 }
 
-# 防火墙配置 & 常用依赖安装
+# 环境准备
 prepare_environment() {
   echo "🔧 准备系统依赖环境 ..." | tee -a "$LOG_FILE"
   apt-get update && apt-get install -y \
@@ -148,18 +148,17 @@ prepare_environment() {
 
   systemctl enable nginx
   systemctl start nginx
-
   systemctl enable docker
   systemctl start docker
 }
 
-# 安装过程启动
+# 安装部分执行
 prepare_environment
 install_nodejs
 install_docker
 
-# 创建所需目录结构
-mkdir -p /home/n8n/n8n /home/n8n-auth /home/n8n/backups
+# 创建目录
+mkdir -p /home/n8n/n8n /home/n8n-auth/public /home/n8n/backups
 
 # 生成 docker-compose.yml
 cat <<EOF > /home/n8n/docker-compose.yml
@@ -206,7 +205,6 @@ app.listen(80, () => console.log("Auth page running on port 80"));
 EOF
 
 # 登录动画 HTML 页面
-mkdir -p /home/n8n-auth/public
 cat <<EOF > /home/n8n-auth/public/login.html
 <!DOCTYPE html>
 <html lang="en">
@@ -245,12 +243,12 @@ cat <<EOF > /home/n8n-auth/public/login.html
 </html>
 EOF
 
-# 安装依赖
+# 安装认证服务依赖
 cd /home/n8n-auth
 npm init -y
 npm install express express-basic-auth
 
-# 登录认证 systemd 服务
+# systemd 启动文件
 cat <<EOF > /etc/systemd/system/n8n-auth.service
 [Unit]
 Description=Custom Login Page for n8n
@@ -289,6 +287,10 @@ server {
   ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
+  # 可选：启用 gzip 压缩提升性能
+  gzip on;
+  gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
   location / {
     proxy_pass http://localhost:5678;
     proxy_set_header Host \$host;
@@ -311,27 +313,27 @@ ln -sf /home/n8n/backups/n8n_backup_\$TIMESTAMP.tar.gz /home/n8n/backups/n8n_bac
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 清理旧备份脚本
+# 清理旧备份脚本（保留最近 10 天）
 cat <<EOF > /home/n8n/clean-backups.sh
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +10 -exec rm {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
-# 自动更新检查脚本
+# 自动更新检查脚本（只拉取镜像）
 cat <<EOF > /home/n8n/check-update.sh
 #!/bin/bash
 docker pull n8nio/n8n && echo "✅ n8n 镜像更新检查完成"
 EOF
 chmod +x /home/n8n/check-update.sh
 
-# 自动升级脚本
+# 自动升级脚本（含备份）
 cat <<EOF > /home/n8n/auto-upgrade.sh
 #!/bin/bash
 /home/n8n/backup.sh
-docker compose -f /home/n8n/docker-compose.yml down
+docker compose -f /home/n8n/docker-compose.yml down || docker-compose -f /home/n8n/docker-compose.yml down
 docker pull n8nio/n8n
-docker compose -f /home/n8n/docker-compose.yml up -d
+docker compose -f /home/n8n/docker-compose.yml up -d || docker-compose -f /home/n8n/docker-compose.yml up -d
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
@@ -342,14 +344,20 @@ cat <<EOF > /home/n8n/upgrade-n8n.sh
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 设置每日定时任务
+# 设置定时任务（每天定时运行）
 (crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/backup.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 4 * * * /home/n8n/clean-backups.sh") | crontab -
 (crontab -l 2>/dev/null; echo "0 5 * * * /home/n8n/check-update.sh") | crontab -
 
-# 启动服务
-cd /home/n8n && docker compose up -d
+# 若开启自动更新，再添加升级任务
+if [[ "$AUTO_UPDATE" == "yes" ]]; then
+  (crontab -l 2>/dev/null; echo "0 6 * * * /home/n8n/auto-upgrade.sh") | crontab -
+fi
+
+# 启动所有服务
+cd /home/n8n && docker compose up -d || docker-compose up -d
 systemctl restart nginx
+sleep 2
 systemctl restart n8n-auth
 
 # 最终提示输出
@@ -363,7 +371,8 @@ cat <<EOM
 🚀 自动更新检测脚本: /home/n8n/check-update.sh
 🚀 自动升级脚本: /home/n8n/auto-upgrade.sh
 🔧 手动升级脚本: /home/n8n/upgrade-n8n.sh
-🗓 定时任务已设置：每天自动备份+清理+更新检查
+🗓 定时任务已设置：每天自动备份 + 清理 + 镜像更新
+🔄 自动更新: $( [[ "$AUTO_UPDATE" == "yes" ]] && echo "已启用" || echo "未启用" )
 🔐 登录认证服务 systemd 已安装并自启动
 🌐 登录页面: https://$DOMAIN/login.html
 ⚡ Powered by John 一键部署！🚀
