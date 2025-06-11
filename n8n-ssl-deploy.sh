@@ -119,7 +119,7 @@ networks:
 EOF
 
 # 登录服务 server.js
-eval "cat <<EOL" > /home/n8n-auth/server.js
+cat <<EOF > /home/n8n-auth/server.js
 const express = require("express");
 const app = express();
 const basicAuth = require("express-basic-auth");
@@ -127,13 +127,13 @@ const path = require("path");
 
 app.use(
   basicAuth({
-    users: { \"$BASIC_USER\": \"$BASIC_PASSWORD\" },
+    users: { "$BASIC_USER": "$BASIC_PASSWORD" },
     challenge: true,
   })
 );
 app.use(express.static(path.join(__dirname, "public")));
 app.listen(80, () => console.log("Auth page running on port 80"));
-EOL
+EOF
 
 # 动效登录页
 cat <<EOF > /home/n8n-auth/public/login.html
