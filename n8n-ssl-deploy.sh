@@ -59,7 +59,12 @@ LATEST_MAJOR=$(curl -s https://nodejs.org/dist/index.json | jq '.[0].version' | 
 
 if [ -z "$NODE_VERSION" ] || [ "$NODE_MAJOR" -lt "$LATEST_MAJOR" ]; then
   echo "🧹 发现旧版 Node.js（当前: v$NODE_VERSION, 最新: v$LATEST_MAJOR），准备清除并安装最新版..." | tee -a "$LOG_FILE"
-  apt remove -y nodejs npm || yum remove -y nodejs npm || dnf remove -y nodejs npm || true
+
+  # 清理旧 Node.js、npm 和 libnode-dev（防止冲突）
+  apt purge -y nodejs npm libnode-dev || true
+  apt autoremove -y || true
+
+  # 添加最新版 Node.js 源并安装
   curl -fsSL https://deb.nodesource.com/setup_current.x | bash -
   apt install -y nodejs || yum install -y nodejs || dnf install -y nodejs
 else
