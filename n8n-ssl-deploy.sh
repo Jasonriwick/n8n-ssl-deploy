@@ -276,7 +276,7 @@ certbot certonly --webroot -w /var/www/html -d "$DOMAIN" --email "$EMAIL" --agre
 if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
   echo "❌ 未能成功获取 SSL 证书，终止部署。" | tee -a "$LOG_FILE"
   exit 1
-fi)
+fi
 
 
 # 替换完整的 SSL 配置（443 启用，80 强制跳转）
