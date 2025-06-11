@@ -40,7 +40,7 @@ esac
 
 # 用户交互
 read -p "🌐 输入域名 (如 n8n.example.com): " DOMAIN
-DOMAIN=$(echo "$DOMAIN" | tr -d '\r\n' | xargs)  # 清理换行空格等
+DOMAIN=$(echo "$DOMAIN" | tr -d '\r\n' | xargs)
 read -p "📧 输入邮箱 (用于SSL): " EMAIL
 read -p "👤 登录用户名 (默认admin): " BASIC_USER
 BASIC_USER=${BASIC_USER:-admin}
@@ -52,15 +52,14 @@ read -p "🤖 是否开启自动更新？(yes/no): " AUTO_UPDATE
 # 安装依赖
 echo "📦 安装依赖..." | tee -a "$LOG_FILE"
 if command -v apt &>/dev/null; then
-  apt update -y && apt install -y \
-    curl wget gnupg2 ca-certificates sudo unzip jq lsof \
-    nginx certbot python3-certbot-nginx ufw nodejs npm cron software-properties-common
+  apt update -y && apt install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
+    nginx certbot python3-certbot-nginx ufw cron software-properties-common
 elif command -v yum &>/dev/null; then
   yum install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
-    nginx certbot python3-certbot-nginx ufw nodejs npm cronie epel-release
+    nginx certbot python3-certbot-nginx ufw cronie epel-release
 elif command -v dnf &>/dev/null; then
   dnf install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
-    nginx certbot python3-certbot-nginx ufw nodejs npm cronie
+    nginx certbot python3-certbot-nginx ufw cronie
 fi
 
 systemctl enable nginx && systemctl start nginx
@@ -70,13 +69,23 @@ echo "🐳 安装 Docker..." | tee -a "$LOG_FILE"
 if ! command -v docker &>/dev/null; then
   curl -fsSL https://get.docker.com | bash
 fi
+
+# 安装 docker compose 插件（兼容旧系统）
 if ! docker compose version &>/dev/null && ! docker-compose version &>/dev/null; then
   mkdir -p /usr/local/lib/docker/cli-plugins
   curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) \
     -o /usr/local/lib/docker/cli-plugins/docker-compose
   chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 fi
+
 systemctl enable docker && systemctl start docker
+
+# 确保 Node.js 版本 ≥ 18（用于 express 登录认证页）
+if ! command -v node >/dev/null || [ "$(node -v | cut -d 'v' -f2 | cut -d '.' -f1)" -lt 18 ]; then
+  echo "⬆️ 升级 Node.js 至 18+" | tee -a "$LOG_FILE"
+  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+  apt install -y nodejs
+fi
 
 # 创建目录结构
 mkdir -p /home/n8n/n8n /home/n8n-auth/public /home/n8n/backups
@@ -108,7 +117,7 @@ networks:
     driver: bridge
 EOF
 
-# 创建认证登录页服务 server.js
+# 创建认证服务 server.js
 cat <<EOF > /home/n8n-auth/server.js
 const express = require("express");
 const app = express();
@@ -139,7 +148,7 @@ EOF
 # 安装 Node.js 登录服务依赖
 cd /home/n8n-auth
 npm init -y
-npm install express express-basic-auth --yes
+npm install express express-basic-auth
 
 # 配置 systemd 启动登录认证服务
 cat <<EOF > /etc/systemd/system/n8n-auth.service
@@ -157,13 +166,13 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 EOF
 
-# 启用登录认证服务
+# 启动登录认证服务
 systemctl daemon-reexec
 systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 先写入临时 HTTP 配置（仅监听 80）
+# 写入初始 HTTP 配置以便 Certbot 能成功申请证书
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
 server {
   listen 80;
@@ -178,13 +187,12 @@ server {
 }
 EOF
 
-# 测试 nginx 配置 & 启动
 nginx -t && systemctl reload nginx
 
-# 执行 certbot 获取证书
-certbot certonly --webroot -w /var/www/html -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
+# 自动申请 Let's Encrypt SSL 证书（使用 --standalone 更保险）
+certbot certonly --standalone -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
 
-# 重新写入完整的 SSL 配置（80 转 443，443 启用证书）
+# 写入完整 SSL 配置
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
 server {
   listen 80;
@@ -213,9 +221,8 @@ server {
 }
 EOF
 
-# 再次 reload nginx
+# 重启 nginx
 nginx -t && systemctl reload nginx
-
 
 # 备份脚本
 cat <<EOF > /home/n8n/backup.sh
@@ -258,16 +265,16 @@ chmod +x /home/n8n/upgrade-n8n.sh
 add_cron "0 3 * * * /home/n8n/backup.sh"
 add_cron "0 4 * * * /home/n8n/clean-backups.sh"
 add_cron "0 5 * * * /home/n8n/check-update.sh"
-[[ "$AUTO_UPDATE" == "yes" ]] && add_cron "0 6 * * * /home/n8n/auto-upgrade.sh"
+[[ "\$AUTO_UPDATE" == "yes" ]] && add_cron "0 6 * * * /home/n8n/auto-upgrade.sh"
 
-# 启动服务
+# 启动 n8n 服务容器
 cd /home/n8n
 docker_compose up -d
 systemctl restart nginx
 sleep 2
 systemctl restart n8n-auth
 
-# 输出部署结果
+# 输出部署成功提示
 AUTO_STATUS=$( [[ "$AUTO_UPDATE" == "yes" ]] && echo "已启用" || echo "未启用" )
 cat <<EOM
 
@@ -277,14 +284,14 @@ cat <<EOM
 🔐 登录账号: $BASIC_USER
 🔑 登录密码: $BASIC_PASSWORD
 
-📦 自动备份: /home/n8n/backup.sh
-🧹 清理旧备份: /home/n8n/clean-backups.sh
-🚀 自动升级: /home/n8n/auto-upgrade.sh
-🔧 手动升级: /home/n8n/upgrade-n8n.sh
+📦 自动备份路径: /home/n8n/backup.sh
+🧹 备份清理路径: /home/n8n/clean-backups.sh
+🚀 自动升级路径: /home/n8n/auto-upgrade.sh
+🔧 手动升级路径: /home/n8n/upgrade-n8n.sh
 📅 自动更新状态: $AUTO_STATUS
 
-🖼 登录页: https://$DOMAIN/login.html
-🛡️ 登录认证服务已启用 (systemd)
+🖼 登录页展示: https://$DOMAIN/login.html
+🛡️ 登录认证服务 systemd 已启用
 
 ⚡ Powered by John Script - 稳定 • 安全 • 自动化
 
