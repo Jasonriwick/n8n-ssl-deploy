@@ -163,7 +163,28 @@ systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 配置 Nginx（带 80 转 HTTPS + 443 转发端口）
+# 先写入临时 HTTP 配置（仅监听 80）
+cat <<EOF > /etc/nginx/conf.d/n8n.conf
+server {
+  listen 80;
+  server_name $DOMAIN;
+  location / {
+    proxy_pass http://localhost:5678;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+}
+EOF
+
+# 测试 nginx 配置 & 启动
+nginx -t && systemctl reload nginx
+
+# 执行 certbot 获取证书
+certbot certonly --webroot -w /var/www/html -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
+
+# 重新写入完整的 SSL 配置（80 转 443，443 启用证书）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
 server {
   listen 80;
@@ -192,9 +213,9 @@ server {
 }
 EOF
 
-# 使用 Certbot 自动申请 SSL（非交互）
-certbot --nginx -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
-systemctl reload nginx
+# 再次 reload nginx
+nginx -t && systemctl reload nginx
+
 
 # 备份脚本
 cat <<EOF > /home/n8n/backup.sh
