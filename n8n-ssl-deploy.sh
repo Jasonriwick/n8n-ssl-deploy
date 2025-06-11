@@ -49,10 +49,32 @@ BASIC_PASSWORD=${BASIC_PASSWORD:-admin123}
 echo ""
 read -p "🤖 是否开启自动更新？(yes/no): " AUTO_UPDATE
 
-# 安装依赖
+# 检查并升级 Node.js
+echo "🧪 检查 Node.js 版本..." | tee -a "$LOG_FILE"
+NODE_VERSION=$(node -v 2>/dev/null | sed 's/v//')
+NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
+
+# 最新版本主版本号（根据 Node.js 当前官网 LTS/Current 变动也可替换为 dynamic 检测）
+LATEST_MAJOR=$(curl -s https://nodejs.org/dist/index.json | jq '.[0].version' | sed 's/"v\([0-9]*\).*/\1/')
+
+if [ -z "$NODE_VERSION" ] || [ "$NODE_MAJOR" -lt "$LATEST_MAJOR" ]; then
+  echo "🧹 发现旧版 Node.js（当前: v$NODE_VERSION, 最新: v$LATEST_MAJOR），准备清除并安装最新版..." | tee -a "$LOG_FILE"
+  apt remove -y nodejs npm || yum remove -y nodejs npm || dnf remove -y nodejs npm || true
+  curl -fsSL https://deb.nodesource.com/setup_current.x | bash -
+  apt install -y nodejs || yum install -y nodejs || dnf install -y nodejs
+else
+  echo "✅ Node.js 已是最新版 v$NODE_VERSION" | tee -a "$LOG_FILE"
+fi
+
+# 显示版本
+echo "✅ 当前 Node.js: $(node -v)" | tee -a "$LOG_FILE"
+echo "✅ 当前 npm: $(npm -v)" | tee -a "$LOG_FILE"
+
+# 安装通用依赖（根据系统类型自动跳过确认）
 echo "📦 安装依赖..." | tee -a "$LOG_FILE"
 if command -v apt &>/dev/null; then
-  apt update -y && apt install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
+  apt update -y && apt install -y \
+    curl wget gnupg2 ca-certificates sudo unzip jq lsof \
     nginx certbot python3-certbot-nginx ufw cron software-properties-common
 elif command -v yum &>/dev/null; then
   yum install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
@@ -62,15 +84,17 @@ elif command -v dnf &>/dev/null; then
     nginx certbot python3-certbot-nginx ufw cronie
 fi
 
-systemctl enable nginx && systemctl start nginx
+# 启动并设置 Nginx 自启动
+systemctl enable nginx
+systemctl start nginx
 
-# 安装 Docker 和 Compose
+# 安装 Docker（如未安装）
 echo "🐳 安装 Docker..." | tee -a "$LOG_FILE"
 if ! command -v docker &>/dev/null; then
   curl -fsSL https://get.docker.com | bash
 fi
 
-# 安装 docker compose 插件（兼容旧系统）
+# 安装 Docker Compose（如未安装 v2+ 或 legacy）
 if ! docker compose version &>/dev/null && ! docker-compose version &>/dev/null; then
   mkdir -p /usr/local/lib/docker/cli-plugins
   curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) \
@@ -78,14 +102,9 @@ if ! docker compose version &>/dev/null && ! docker-compose version &>/dev/null;
   chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 fi
 
-systemctl enable docker && systemctl start docker
-
-# 确保 Node.js 版本 ≥ 18（用于 express 登录认证页）
-if ! command -v node >/dev/null || [ "$(node -v | cut -d 'v' -f2 | cut -d '.' -f1)" -lt 18 ]; then
-  echo "⬆️ 升级 Node.js 至 18+" | tee -a "$LOG_FILE"
-  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-  apt install -y nodejs
-fi
+# 启动 Docker 服务
+systemctl enable docker
+systemctl start docker
 
 # 创建目录结构
 mkdir -p /home/n8n/n8n /home/n8n-auth/public /home/n8n/backups
@@ -117,7 +136,7 @@ networks:
     driver: bridge
 EOF
 
-# 创建认证服务 server.js
+# 创建认证登录页服务 server.js
 cat <<EOF > /home/n8n-auth/server.js
 const express = require("express");
 const app = express();
@@ -148,7 +167,7 @@ EOF
 # 安装 Node.js 登录服务依赖
 cd /home/n8n-auth
 npm init -y
-npm install express express-basic-auth
+npm install express express-basic-auth --yes
 
 # 配置 systemd 启动登录认证服务
 cat <<EOF > /etc/systemd/system/n8n-auth.service
@@ -166,17 +185,18 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 EOF
 
-# 启动登录认证服务
+# 启用认证服务
 systemctl daemon-reexec
 systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 写入初始 HTTP 配置以便 Certbot 能成功申请证书
+# 写入初始 HTTP 配置，仅监听 80 端口（申请 SSL 前使用）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
 server {
   listen 80;
   server_name $DOMAIN;
+
   location / {
     proxy_pass http://localhost:5678;
     proxy_set_header Host \$host;
@@ -187,12 +207,22 @@ server {
 }
 EOF
 
+# 创建 Certbot 临时验证路径
+mkdir -p /var/www/html
+
+# 测试配置，确保没有语法错误
 nginx -t && systemctl reload nginx
 
-# 自动申请 Let's Encrypt SSL 证书（使用 --standalone 更保险）
-certbot certonly --standalone -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
+# 使用 Certbot 自动申请 SSL 证书（静默模式）
+certbot certonly --webroot -w /var/www/html -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
 
-# 写入完整 SSL 配置
+# 检查证书路径是否生成成功
+if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+  echo "❌ SSL 证书申请失败，请检查域名是否正确解析至本服务器。" | tee -a "$LOG_FILE"
+  exit 1
+fi
+
+# 替换完整的 SSL 配置（443 启用，80 强制跳转）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
 server {
   listen 80;
@@ -201,6 +231,7 @@ server {
     return 301 https://\$host\$request_uri;
   }
 }
+
 server {
   listen 443 ssl;
   server_name $DOMAIN;
@@ -221,10 +252,10 @@ server {
 }
 EOF
 
-# 重启 nginx
+# 再次 reload 确认 HTTPS 配置生效
 nginx -t && systemctl reload nginx
 
-# 备份脚本
+# 创建备份脚本
 cat <<EOF > /home/n8n/backup.sh
 #!/bin/bash
 TIMESTAMP=\$(date +"%Y%m%d-%H%M%S")
@@ -233,7 +264,7 @@ ln -sf /home/n8n/backups/n8n_backup_\$TIMESTAMP.tar.gz /home/n8n/backups/n8n_bac
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 清理 10 天前备份
+# 清理10天前的备份
 cat <<EOF > /home/n8n/clean-backups.sh
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +10 -exec rm {} \;
@@ -257,24 +288,26 @@ docker compose up -d || docker-compose up -d
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# 手动升级快捷脚本
+# 手动升级快捷方式
 echo -e "#!/bin/bash\n/home/n8n/auto-upgrade.sh" > /home/n8n/upgrade-n8n.sh
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 定时任务配置
+# 添加定时任务（去重避免重复添加）
 add_cron "0 3 * * * /home/n8n/backup.sh"
 add_cron "0 4 * * * /home/n8n/clean-backups.sh"
 add_cron "0 5 * * * /home/n8n/check-update.sh"
-[[ "\$AUTO_UPDATE" == "yes" ]] && add_cron "0 6 * * * /home/n8n/auto-upgrade.sh"
+[[ "$AUTO_UPDATE" == "yes" ]] && add_cron "0 6 * * * /home/n8n/auto-upgrade.sh"
 
 # 启动 n8n 服务容器
 cd /home/n8n
 docker_compose up -d
+
+# 重启 Nginx 和认证服务
 systemctl restart nginx
 sleep 2
 systemctl restart n8n-auth
 
-# 输出部署成功提示
+# 输出部署信息
 AUTO_STATUS=$( [[ "$AUTO_UPDATE" == "yes" ]] && echo "已启用" || echo "未启用" )
 cat <<EOM
 
@@ -284,14 +317,14 @@ cat <<EOM
 🔐 登录账号: $BASIC_USER
 🔑 登录密码: $BASIC_PASSWORD
 
-📦 自动备份路径: /home/n8n/backup.sh
-🧹 备份清理路径: /home/n8n/clean-backups.sh
-🚀 自动升级路径: /home/n8n/auto-upgrade.sh
-🔧 手动升级路径: /home/n8n/upgrade-n8n.sh
+📦 自动备份: /home/n8n/backup.sh
+🧹 清理旧备份: /home/n8n/clean-backups.sh
+🚀 自动升级: /home/n8n/auto-upgrade.sh
+🔧 手动升级: /home/n8n/upgrade-n8n.sh
 📅 自动更新状态: $AUTO_STATUS
 
-🖼 登录页展示: https://$DOMAIN/login.html
-🛡️ 登录认证服务 systemd 已启用
+🖼 登录页: https://$DOMAIN/login.html
+🛡️ 登录认证服务已启用 (systemd)
 
 ⚡ Powered by John Script - 稳定 • 安全 • 自动化
 
