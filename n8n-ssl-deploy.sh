@@ -239,15 +239,19 @@ server {
 EOF
 
 
-# 检查域名是否解析至本机公网IP
-echo "🔍 检查域名解析..."
+# 检查域名是否解析至本机公网IP（允许用户选择是否继续）
+echo "🔍 正在检查域名是否指向本机..."
 IP_LOCAL=$(curl -s https://api.ipify.org)
-IP_DOMAIN=$(dig +short "$DOMAIN" | tail -n1)
+IP_DOMAIN=$(dig +short "$DOMAIN" | grep -v ':' | head -n1)
 
 if [[ "$IP_LOCAL" != "$IP_DOMAIN" ]]; then
-  echo "❌ 域名 $DOMAIN 未正确解析至本机公网IP ($IP_LOCAL)，当前解析为 $IP_DOMAIN"
-  echo "👉 请检查你的 DNS 设置，等待生效后再重新执行部署脚本。"
-  exit 1
+  echo "⚠️ 检测到：域名 $DOMAIN 当前解析为 $IP_DOMAIN，但本机公网IP是 $IP_LOCAL"
+  echo "👉 这可能是因为你启用了 CDN（如 Cloudflare）。"
+  echo "⚠️ Certbot 使用 webroot 模式时，CDN 可能会阻断验证文件访问，导致申请失败。"
+  read -p "❓ 是否继续部署？(y/n): " CONFIRM
+  [[ "$CONFIRM" != "y" ]] && echo "⛔ 已取消部署。" && exit 1
+else
+  echo "✅ 域名解析正常，继续部署..."
 fi
 
 # 创建验证路径
