@@ -54,8 +54,8 @@ echo "🧪 检查 Node.js 版本..." | tee -a "$LOG_FILE"
 NODE_VERSION=$(node -v 2>/dev/null | sed 's/v//')
 NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
 
-# 最新版本主版本号（根据 Node.js 当前官网 LTS/Current 变动也可替换为 dynamic 检测）
-LATEST_MAJOR=$(curl -s https://nodejs.org/dist/index.json | jq '.[0].version' | sed 's/"v\([0-9]*\).*/\1/')
+# 最新版本主版本号（从官网获取）
+LATEST_MAJOR=$(curl -s https://nodejs.org/dist/index.json | jq '.[0].version' | sed 's/\"v\([0-9]*\).*/\1/')
 
 if [ -z "$NODE_VERSION" ] || [ "$NODE_MAJOR" -lt "$LATEST_MAJOR" ]; then
   echo "🧹 发现旧版 Node.js（当前: v$NODE_VERSION, 最新: v$LATEST_MAJOR），准备清除并安装最新版..." | tee -a "$LOG_FILE"
@@ -70,7 +70,7 @@ fi
 echo "✅ 当前 Node.js: $(node -v)" | tee -a "$LOG_FILE"
 echo "✅ 当前 npm: $(npm -v)" | tee -a "$LOG_FILE"
 
-# 安装通用依赖（根据系统类型自动跳过确认）
+# 安装通用依赖
 echo "📦 安装依赖..." | tee -a "$LOG_FILE"
 if command -v apt &>/dev/null; then
   apt update -y && apt install -y \
@@ -87,6 +87,7 @@ fi
 # 启动并设置 Nginx 自启动
 systemctl enable nginx
 systemctl start nginx
+
 
 # 安装 Docker（如未安装）
 echo "🐳 安装 Docker..." | tee -a "$LOG_FILE"
