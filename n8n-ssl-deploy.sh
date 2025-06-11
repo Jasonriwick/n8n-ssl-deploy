@@ -1,9 +1,22 @@
 #!/bin/bash
-
 set -e
 
 LOG_FILE="/var/log/n8n-deploy.log"
-echo "🔧 开始 John 一键部署版 N8N (Docker + Nginx + SSL + 登录认证 + 动效登录页) ..." | tee -a "$LOG_FILE"
+echo "🔧 启动 N8N 一键部署（SSL + 登录认证 + 动效页）..." | tee -a "$LOG_FILE"
+
+# docker compose fallback 函数
+docker_compose() {
+  if command -v docker compose &>/dev/null; then
+    docker compose "$@"
+  else
+    docker-compose "$@"
+  fi
+}
+
+# 添加定时任务去重函数
+add_cron() {
+  (crontab -l 2>/dev/null | grep -v "$1"; echo "$1") | crontab -
+}
 
 # 检测系统信息
 if [ -f /etc/os-release ]; then
@@ -11,153 +24,72 @@ if [ -f /etc/os-release ]; then
   OS=$ID
   VERSION_ID=${VERSION_ID%%.*}
 else
-  echo "❌ 无法检测操作系统信息，退出。" | tee -a "$LOG_FILE"
+  echo "❌ 无法检测系统，退出。" | tee -a "$LOG_FILE"
   exit 1
 fi
 
-echo "🔍 检测到系统: $OS $VERSION_ID" | tee -a "$LOG_FILE"
+echo "🔍 检测系统: $OS $VERSION_ID" | tee -a "$LOG_FILE"
 
-# 系统版本兼容检测
 case "$OS" in
-  ubuntu)
-    if [ "$VERSION_ID" -lt 20 ]; then
-      echo "❌ Ubuntu 版本太旧，要求 20.04 或更高版本。" | tee -a "$LOG_FILE"
-      exit 1
-    fi
-    ;;
-  debian)
-    if [ "$VERSION_ID" -lt 10 ]; then
-      echo "❌ Debian 版本太旧，要求 10 或更高版本。" | tee -a "$LOG_FILE"
-      exit 1
-    fi
-    ;;
-  centos|rocky|almalinux|rhel)
-    if [ "$VERSION_ID" -lt 8 ]; then
-      echo "❌ RedHat 系列版本太旧，要求 8 或更高版本。" | tee -a "$LOG_FILE"
-      exit 1
-    fi
-    ;;
-  amzn)
-    echo "✅ 检测到 Amazon Linux 2，继续。" | tee -a "$LOG_FILE"
-    ;;
-  *)
-    echo "❌ 不支持的系统: $OS。建议使用 Ubuntu, Debian, CentOS 8+。" | tee -a "$LOG_FILE"
-    exit 1
-    ;;
+  ubuntu)   [ "$VERSION_ID" -lt 20 ] && echo "❌ Ubuntu需20+" && exit 1 ;;
+  debian)   [ "$VERSION_ID" -lt 10 ] && echo "❌ Debian需10+" && exit 1 ;;
+  centos|rocky|almalinux|rhel) [ "$VERSION_ID" -lt 8 ] && echo "❌ CentOS需8+" && exit 1 ;;
+  amzn)     echo "✅ Amazon Linux 2 通过" ;;
+  *)        echo "❌ 不支持的系统: $OS" && exit 1 ;;
 esac
 
 # 用户输入
-read -p "🌐 请输入你的域名 (如 example.com): " DOMAIN
-read -p "📧 请输入用于 SSL 的邮箱: " EMAIL
-read -p "👤 请输入登录用户名（留空默认 admin）: " BASIC_USER
+read -p "🌐 输入域名 (如 n8n.example.com): " DOMAIN
+read -p "📧 输入邮箱 (用于SSL): " EMAIL
+read -p "👤 登录用户名 (默认admin): " BASIC_USER
 BASIC_USER=${BASIC_USER:-admin}
-read -s -p "🔒 请输入登录密码（留空默认 admin123）: " BASIC_PASSWORD
+read -s -p "🔒 登录密码 (默认admin123): " BASIC_PASSWORD
 BASIC_PASSWORD=${BASIC_PASSWORD:-admin123}
 echo ""
-read -p "🤖 是否开启 N8N 自动更新？(yes/no): " AUTO_UPDATE
+read -p "🤖 是否开启自动更新？(yes/no): " AUTO_UPDATE
 
-# 日志函数
-debug_log() {
-  echo "$(date '+%Y-%m-%d %H:%M:%S') | $1" >> "$LOG_FILE"
-}
-
-# 健康检测函数
-health_check() {
-  local retries=3
-  local success=false
-  for ((i=1; i<=retries; i++)); do
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://$DOMAIN || echo "000")
-    if [[ "$STATUS" == "200" || "$STATUS" == "302" ]]; then
-      echo "✅ 第 $i 次检测成功，网站状态：$STATUS" | tee -a "$LOG_FILE"
-      success=true
-      break
-    else
-      echo "⚠️ 第 $i 次检测失败，状态码：$STATUS" | tee -a "$LOG_FILE"
-      sleep 5
-    fi
-  done
-
-  if [ "$success" = false ]; then
-    echo "❌ 多次检测失败，开始自修复..." | tee -a "$LOG_FILE"
-    nginx -t || echo "⚠️ Nginx 配置异常" | tee -a "$LOG_FILE"
-    systemctl restart nginx || true
-    docker compose down || docker-compose down
-    docker compose up -d || docker-compose up -d
-    sleep 5
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://$DOMAIN || echo "000")
-    if [[ "$STATUS" == "200" || "$STATUS" == "302" ]]; then
-      echo "✅ 修复成功！状态码：$STATUS" | tee -a "$LOG_FILE"
-    else
-      echo "🚨 修复失败，尝试回滚至最近备份..." | tee -a "$LOG_FILE"
-      if [ -f /home/n8n/backups/n8n_backup_latest.tar.gz ]; then
-        docker compose down || docker-compose down
-        tar -xzf /home/n8n/backups/n8n_backup_latest.tar.gz -C /home/n8n/n8n
-        docker compose up -d || docker-compose up -d
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://$DOMAIN || echo "000")
-        if [[ "$STATUS" == "200" || "$STATUS" == "302" ]]; then
-          echo "✅ 回滚成功！网站恢复正常。" | tee -a "$LOG_FILE"
-        else
-          echo "🚫 回滚失败，请手动排查，日志参考: $LOG_FILE" | tee -a "$LOG_FILE"
-        fi
-      else
-        echo "❌ 未找到备份，无法回滚，请手动检查服务配置。" | tee -a "$LOG_FILE"
-      fi
-    fi
+# 安装依赖函数
+install_dependencies() {
+  echo "📦 安装系统依赖..." | tee -a "$LOG_FILE"
+  if command -v apt &>/dev/null; then
+    apt update -y && apt install -y \
+      curl wget gnupg2 ca-certificates sudo unzip jq lsof \
+      nginx certbot python3-certbot-nginx ufw \
+      nodejs npm cron software-properties-common
+  elif command -v yum &>/dev/null; then
+    yum install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
+      nginx certbot python3-certbot-nginx ufw \
+      nodejs npm cronie epel-release
+  elif command -v dnf &>/dev/null; then
+    dnf install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
+      nginx certbot python3-certbot-nginx ufw \
+      nodejs npm cronie
   fi
+
+  systemctl enable nginx && systemctl start nginx
 }
 
-# 安装 Node.js（如未安装）
-install_nodejs() {
-  if ! command -v node &>/dev/null; then
-    echo "🧩 正在安装最新 LTS 版 Node.js ..." | tee -a "$LOG_FILE"
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-    apt-get install -y nodejs || yum install -y nodejs || dnf install -y nodejs
-  else
-    echo "🟢 已检测到 Node.js，跳过安装。" | tee -a "$LOG_FILE"
-  fi
-}
-
-# 安装 Docker & Docker Compose（支持新版与旧版兼容）
+# 安装 Docker 函数
 install_docker() {
-  echo "📦 安装 Docker 和 Docker Compose ..." | tee -a "$LOG_FILE"
+  echo "🐳 安装 Docker..." | tee -a "$LOG_FILE"
   if ! command -v docker &>/dev/null; then
     curl -fsSL https://get.docker.com | bash
   fi
   if ! docker compose version &>/dev/null && ! docker-compose version &>/dev/null; then
-    echo "🔄 安装 Docker Compose 插件" | tee -a "$LOG_FILE"
     mkdir -p ~/.docker/cli-plugins
     curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) \
       -o ~/.docker/cli-plugins/docker-compose
     chmod +x ~/.docker/cli-plugins/docker-compose
   fi
+
+  systemctl enable docker && systemctl start docker
 }
 
-# 环境准备
-prepare_environment() {
-  echo "🔧 准备系统依赖环境 ..." | tee -a "$LOG_FILE"
-  apt-get update && apt-get install -y \
-    curl wget gnupg2 ca-certificates sudo unzip jq lsof \
-    nginx certbot python3-certbot-nginx ufw \
-    cron software-properties-common || \
-  yum install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
-    nginx certbot python3-certbot-nginx ufw \
-    cronie epel-release || \
-  dnf install -y curl wget gnupg2 ca-certificates sudo unzip jq lsof \
-    nginx certbot python3-certbot-nginx ufw \
-    cronie
-
-  systemctl enable nginx
-  systemctl start nginx
-  systemctl enable docker
-  systemctl start docker
-}
-
-# 安装部分执行
-prepare_environment
-install_nodejs
+# 开始安装
+install_dependencies
 install_docker
 
-# 创建目录
+# 创建必要目录
 mkdir -p /home/n8n/n8n /home/n8n-auth/public /home/n8n/backups
 
 # 生成 docker-compose.yml
@@ -187,7 +119,7 @@ networks:
     driver: bridge
 EOF
 
-# 登录认证 Node.js 服务
+# 写入认证服务 server.js
 cat <<EOF > /home/n8n-auth/server.js
 const express = require("express");
 const app = express();
@@ -196,7 +128,7 @@ const path = require("path");
 
 app.use(
   basicAuth({
-    users: { "$BASIC_USER": "$BASIC_PASSWORD" },
+    users: { "${BASIC_USER}": "${BASIC_PASSWORD}" },
     challenge: true,
   })
 );
@@ -204,7 +136,7 @@ app.use(express.static(path.join(__dirname, "public")));
 app.listen(80, () => console.log("Auth page running on port 80"));
 EOF
 
-# 登录动画 HTML 页面
+# 写入登录动效页面 login.html
 cat <<EOF > /home/n8n-auth/public/login.html
 <!DOCTYPE html>
 <html lang="en">
@@ -243,12 +175,12 @@ cat <<EOF > /home/n8n-auth/public/login.html
 </html>
 EOF
 
-# 安装认证服务依赖
+# 安装 Node.js 依赖
 cd /home/n8n-auth
 npm init -y
 npm install express express-basic-auth
 
-# systemd 启动文件
+# 创建 systemd 启动文件
 cat <<EOF > /etc/systemd/system/n8n-auth.service
 [Unit]
 Description=Custom Login Page for n8n
@@ -269,7 +201,7 @@ systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 生成 Nginx 配置文件
+# 写入 Nginx 配置
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
 server {
   listen 80;
@@ -287,7 +219,6 @@ server {
   ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
-  # 可选：启用 gzip 压缩提升性能
   gzip on;
   gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
 
@@ -301,10 +232,11 @@ server {
 }
 EOF
 
-# 获取 HTTPS 证书
+# 获取 SSL 证书
 certbot --nginx -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
+systemctl reload nginx
 
-# 创建自动备份脚本
+# 自动备份脚本
 cat <<EOF > /home/n8n/backup.sh
 #!/bin/bash
 TIMESTAMP=\$(date +"%Y%m%d-%H%M%S")
@@ -313,17 +245,17 @@ ln -sf /home/n8n/backups/n8n_backup_\$TIMESTAMP.tar.gz /home/n8n/backups/n8n_bac
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 清理旧备份脚本（保留最近 10 天）
+# 清理旧备份脚本（保留10天）
 cat <<EOF > /home/n8n/clean-backups.sh
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +10 -exec rm {} \;
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
-# 自动更新检查脚本（只拉取镜像）
+# 拉取镜像检查脚本
 cat <<EOF > /home/n8n/check-update.sh
 #!/bin/bash
-docker pull n8nio/n8n && echo "✅ n8n 镜像更新检查完成"
+docker pull n8nio/n8n >> /var/log/n8n-update.log 2>&1
 EOF
 chmod +x /home/n8n/check-update.sh
 
@@ -331,9 +263,9 @@ chmod +x /home/n8n/check-update.sh
 cat <<EOF > /home/n8n/auto-upgrade.sh
 #!/bin/bash
 /home/n8n/backup.sh
-docker compose -f /home/n8n/docker-compose.yml down || docker-compose -f /home/n8n/docker-compose.yml down
+docker_compose down
 docker pull n8nio/n8n
-docker compose -f /home/n8n/docker-compose.yml up -d || docker-compose -f /home/n8n/docker-compose.yml up -d
+docker_compose up -d
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
@@ -344,37 +276,44 @@ cat <<EOF > /home/n8n/upgrade-n8n.sh
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 设置定时任务（每天定时运行）
-(crontab -l 2>/dev/null; echo "0 3 * * * /home/n8n/backup.sh") | crontab -
-(crontab -l 2>/dev/null; echo "0 4 * * * /home/n8n/clean-backups.sh") | crontab -
-(crontab -l 2>/dev/null; echo "0 5 * * * /home/n8n/check-update.sh") | crontab -
+# 添加定时任务（去重）
+add_cron "0 3 * * * /home/n8n/backup.sh"
+add_cron "0 4 * * * /home/n8n/clean-backups.sh"
+add_cron "0 5 * * * /home/n8n/check-update.sh"
 
-# 若开启自动更新，再添加升级任务
 if [[ "$AUTO_UPDATE" == "yes" ]]; then
-  (crontab -l 2>/dev/null; echo "0 6 * * * /home/n8n/auto-upgrade.sh") | crontab -
+  add_cron "0 6 * * * /home/n8n/auto-upgrade.sh"
 fi
 
 # 启动所有服务
-cd /home/n8n && docker compose up -d || docker-compose up -d
+cd /home/n8n
+docker_compose up -d
 systemctl restart nginx
 sleep 2
 systemctl restart n8n-auth
 
-# 最终提示输出
+# 输出完成信息
+AUTO_STATUS=$( [[ "$AUTO_UPDATE" == "yes" ]] && echo "已启用" || echo "未启用" )
+
 cat <<EOM
 
-✅ n8n 自定义登录部署完成！访问地址: https://$DOMAIN
-📝 登录用户名: $BASIC_USER
-📝 登录密码: $BASIC_PASSWORD
-📆 自动备份脚本: /home/n8n/backup.sh
-🧹 自动清理脚本: /home/n8n/clean-backups.sh
-🚀 自动更新检测脚本: /home/n8n/check-update.sh
+✅ n8n 已部署成功！
+
+🌍 访问地址: https://$DOMAIN
+🔐 登录账号: $BASIC_USER
+🔑 登录密码: $BASIC_PASSWORD
+
+📦 自动备份脚本: /home/n8n/backup.sh
+🧹 清理旧备份脚本: /home/n8n/clean-backups.sh
+🔍 镜像更新检测: /home/n8n/check-update.sh
 🚀 自动升级脚本: /home/n8n/auto-upgrade.sh
 🔧 手动升级脚本: /home/n8n/upgrade-n8n.sh
-🗓 定时任务已设置：每天自动备份 + 清理 + 镜像更新
-🔄 自动更新: $( [[ "$AUTO_UPDATE" == "yes" ]] && echo "已启用" || echo "未启用" )
-🔐 登录认证服务 systemd 已安装并自启动
-🌐 登录页面: https://$DOMAIN/login.html
-⚡ Powered by John 一键部署！🚀
+📅 自动更新状态: $AUTO_STATUS
+
+📁 数据目录: /home/n8n/n8n
+🎨 登录页面: https://$DOMAIN/login.html
+🛡️ 登录认证服务已启用 (systemd)
+
+⚡ Powered by John Script - 安全 · 自动化 · 稳定
 
 EOM
