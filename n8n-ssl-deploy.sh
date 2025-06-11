@@ -216,12 +216,18 @@ systemctl daemon-reload
 systemctl enable n8n-auth
 systemctl start n8n-auth
 
-# 写入初始 HTTP 配置，仅监听 80 端口（申请 SSL 前使用）
+# 写入初始 HTTP 配置，仅监听 80 端口（用于申请 SSL 前验证）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
 server {
   listen 80;
   server_name $DOMAIN;
 
+  # Certbot 验证专用路径
+  location /.well-known/acme-challenge/ {
+    root /var/www/html;
+  }
+
+  # 默认反代到 n8n 服务
   location / {
     proxy_pass http://localhost:5678;
     proxy_set_header Host \$host;
@@ -232,20 +238,39 @@ server {
 }
 EOF
 
-# 创建 Certbot 临时验证路径
-mkdir -p /var/www/html
 
-# 测试配置，确保没有语法错误
-nginx -t && systemctl reload nginx
+# 检查域名是否解析至本机公网IP
+echo "🔍 检查域名解析..."
+IP_LOCAL=$(curl -s https://api.ipify.org)
+IP_DOMAIN=$(dig +short "$DOMAIN" | tail -n1)
 
-# 使用 Certbot 自动申请 SSL 证书（静默模式）
-certbot certonly --webroot -w /var/www/html -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
-
-# 检查证书路径是否生成成功
-if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
-  echo "❌ SSL 证书申请失败，请检查域名是否正确解析至本服务器。" | tee -a "$LOG_FILE"
+if [[ "$IP_LOCAL" != "$IP_DOMAIN" ]]; then
+  echo "❌ 域名 $DOMAIN 未正确解析至本机公网IP ($IP_LOCAL)，当前解析为 $IP_DOMAIN"
+  echo "👉 请检查你的 DNS 设置，等待生效后再重新执行部署脚本。"
   exit 1
 fi
+
+# 创建验证路径
+mkdir -p /var/www/html/.well-known/acme-challenge
+
+# 测试配置并重载
+nginx -t && systemctl reload nginx
+
+# 执行 Certbot 获取证书，失败则 fallback 到 standalone 模式
+echo "🔐 正在为 $DOMAIN 申请 Let's Encrypt 证书..."
+certbot certonly --webroot -w /var/www/html -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive || {
+  echo "⚠️ Webroot 模式失败，尝试 standalone 模式..."
+  systemctl stop nginx
+  certbot certonly --standalone -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive || {
+    echo "❌ SSL 证书申请仍然失败，请检查端口、防火墙或域名是否可访问。"
+    exit 1
+  }
+  systemctl start nginx
+}
+
+# 检查证书是否存在
+if [ ! -f "/]()
+
 
 # 替换完整的 SSL 配置（443 启用，80 强制跳转）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
