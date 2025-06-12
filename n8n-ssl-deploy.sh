@@ -346,6 +346,18 @@ else
   echo "✅ Let's Encrypt 证书申请成功"
 fi
 
+# 添加 acme.sh 自动续签计划（ZeroSSL 使用时启用）
+~/.acme.sh/acme.sh --upgrade --auto-upgrade
+~/.acme.sh/acme.sh --set-default-ca --server zerossl
+~/.acme.sh/acme.sh --install-cronjob
+
+# certbot 已自动在安装时加入：
+# /etc/cron.d/certbot
+
+~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+--key-file /etc/letsencrypt/live/$DOMAIN/privkey.pem \
+--fullchain-file /etc/letsencrypt/live/$DOMAIN/fullchain.pem \
+--reloadcmd "systemctl restart nginx"
 
 # 重新写入 Nginx 配置（强制走登录认证服务）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
