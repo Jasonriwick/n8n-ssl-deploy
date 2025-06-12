@@ -218,6 +218,26 @@ app.listen(PORT, () => {
 })
 EOF
 
+# 写入 systemd 服务文件（如果不存在）
+cat >/etc/systemd/system/n8n-auth.service <<EOF
+[Unit]
+Description=Custom Login Auth for N8N
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /home/n8n-auth/server.js
+Restart=always
+Environment=NODE_ENV=production
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 注册并启用 n8n-auth 服务
+systemctl daemon-reload
+systemctl enable n8n-auth
+
 # 写入 .env 环境变量
 cat >/home/n8n/.env <<EOF
 GENERIC_TIMEZONE="Asia/Shanghai"
