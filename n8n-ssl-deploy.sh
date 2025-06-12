@@ -316,14 +316,16 @@ mkdir -p /var/www/html/.well-known/acme-challenge
 # 停止 nginx 临时防止占用 80 端口
 systemctl stop nginx
 
-# 尝试申请 Let's Encrypt 证书
-echo "🔐 正在尝试使用 Let's Encrypt 申请证书..."
-certbot certonly --webroot -w /var/www/html -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
-CERTBOT_EXIT=$?
-
+# 设置记录使用的证书方式
 SSL_METHOD_FILE="/home/n8n/.ssl_method"
 
-if [ "$CERTBOT_EXIT" -ne 0 ]; then
+# 申请 Let's Encrypt 证书（包装在 if 内，兼容 set -e）
+echo "🔐 正在尝试使用 Let's Encrypt 申请证书..."
+if certbot certonly --webroot -w /var/www/html -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive; then
+  echo "✅ Let's Encrypt 证书申请成功"
+  echo "letsencrypt" > "$SSL_METHOD_FILE"
+
+else
   echo "⚠️ Let's Encrypt 申请失败，尝试使用 ZeroSSL 重试..."
 
   # 检查 curl 是否安装
@@ -356,9 +358,6 @@ if [ "$CERTBOT_EXIT" -ne 0 ]; then
 
   echo "✅ ZeroSSL 证书安装成功，已部署到 /etc/letsencrypt/live/$DOMAIN/"
   echo "zerossl" > "$SSL_METHOD_FILE"
-else
-  echo "✅ Let's Encrypt 证书申请成功"
-  echo "letsencrypt" > "$SSL_METHOD_FILE"
 fi
 
 # 设置 acme.sh 自动续签（ZeroSSL 使用时启用）
