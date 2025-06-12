@@ -310,9 +310,9 @@ echo "🌐 配置 Nginx ..." | tee -a "$LOG_FILE"
 # 创建 Nginx 配置目录（如果不存在）
 mkdir -p /etc/nginx/conf.d
 
-# 根据 SSL 选择写入配置
+# 根据 SSL 开关写入对应配置
 if [[ "$ENABLE_SSL" == "yes" ]]; then
-cat > /etc/nginx/conf.d/n8n.conf <<EOF
+  cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -358,7 +358,7 @@ server {
 EOF
 
 else
-cat > /etc/nginx/conf.d/n8n.conf <<EOF
+  cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -386,40 +386,43 @@ server {
 EOF
 fi
 
-# 测试并重新加载 Nginx
-nginx -t && systemctl restart nginx
+# 测试并重启 Nginx（防止未安装时报错）
+if command -v nginx &>/dev/null; then
+  nginx -t && systemctl restart nginx
+fi
 
 # ===============================
-# 🔐 自动申请 SSL 证书（Let's Encrypt + ZeroSSL 双备份）
+# 🔐 自动申请 SSL（仅启用 SSL 时执行）
 # ===============================
+if [[ "$ENABLE_SSL" == "yes" ]]; then
+  echo "🔐 准备申请 SSL 证书..." | tee -a "$LOG_FILE"
 
-echo "🔐 准备申请 SSL 证书..." | tee -a "$LOG_FILE"
+  # 配置验证目录
+  mkdir -p /var/www/html/.well-known/acme-challenge
 
-# 配置临时目录用于验证
-mkdir -p /var/www/html/.well-known/acme-challenge
+  # 安装 acme.sh 脚本
+  curl https://get.acme.sh | sh -s email=${EMAIL}
+  export PATH="$HOME/.acme.sh":$PATH
 
-# 安装 acme.sh 并尝试申请证书（Let's Encrypt 优先，失败后尝试 ZeroSSL）
-curl https://get.acme.sh | sh -s email=${EMAIL}
-export PATH="$HOME/.acme.sh":$PATH
+  # 优先使用 Let's Encrypt
+  ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+  ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --webroot /var/www/html || \
+  (
+    echo "⚠️ Let's Encrypt 失败，尝试使用 ZeroSSL" | tee -a "$LOG_FILE"
+    ~/.acme.sh/acme.sh --set-default-ca --server zerossl
+    ~/.acme.sh/acme.sh --register-account -m ${EMAIL} --agree-tos
+    ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --webroot /var/www/html
+  )
 
-~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+  # 安装证书至标准路径
+  ~/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
+    --key-file /etc/letsencrypt/live/${DOMAIN}/privkey.pem \
+    --fullchain-file /etc/letsencrypt/live/${DOMAIN}/fullchain.pem \
+    --reloadcmd "systemctl reload nginx"
 
-~/.acme.sh/acme.sh --issue -d ${DOMAIN} --webroot /var/www/html || \
-(
-  echo "⚠️ Let's Encrypt 失败，尝试使用 ZeroSSL" | tee -a "$LOG_FILE"
-  ~/.acme.sh/acme.sh --set-default-ca --server zerossl
-  ~/.acme.sh/acme.sh --register-account -m ${EMAIL} --agree-tos
-  ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --webroot /var/www/html
-)
-
-# 安装证书至标准路径
-~/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
-  --key-file /etc/letsencrypt/live/${DOMAIN}/privkey.pem \
-  --fullchain-file /etc/letsencrypt/live/${DOMAIN}/fullchain.pem \
-  --reloadcmd "systemctl reload nginx"
-
-# 设置定时续期
-~/.acme.sh/acme.sh --upgrade --auto-upgrade
+  # 设置自动续签
+  ~/.acme.sh/acme.sh --upgrade --auto-upgrade
+fi
 
 # ===============================
 # 🚀 启动登录认证服务 + docker 容器
