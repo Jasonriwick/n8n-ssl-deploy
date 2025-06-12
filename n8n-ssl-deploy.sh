@@ -282,20 +282,23 @@ EOF
 fi
 
 
-# 写入 .env 环境变量
+# 写入基础 .env 信息
 cat >/home/n8n/.env <<EOF
 GENERIC_TIMEZONE="Asia/Shanghai"
 N8N_BASIC_AUTH_ACTIVE=true
 N8N_BASIC_AUTH_USER=${BASIC_USER}
 N8N_BASIC_AUTH_PASSWORD=${BASIC_PASSWORD}
 N8N_HOST=${DOMAIN}
+ENABLE_SSL=${ENABLE_SSL}
+EOF
+
+# 根据 SSL 设置追加 WEBHOOK_TUNNEL_URL
 if [[ "$ENABLE_SSL" == "yes" ]]; then
   echo "WEBHOOK_TUNNEL_URL=https://${DOMAIN}/" >> /home/n8n/.env
 else
   echo "WEBHOOK_TUNNEL_URL=http://${DOMAIN}/" >> /home/n8n/.env
 fi
-ENABLE_SSL=${ENABLE_SSL}
-EOF
+
 
 # 写入 docker-compose.yml
 cat >/home/n8n/docker-compose.yml <<EOF
