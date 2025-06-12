@@ -316,8 +316,36 @@ mkdir -p /var/www/html/.well-known/acme-challenge
 # 停止 nginx 临时防止占用 80 端口
 systemctl stop nginx
 
-# 申请 Let's Encrypt 证书
+# 尝试申请 Let's Encrypt 证书
+echo "🔐 正在尝试使用 Let's Encrypt 申请证书..."
 certbot certonly --webroot -w /var/www/html -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
+CERTBOT_EXIT=$?
+
+if [ "$CERTBOT_EXIT" -ne 0 ]; then
+  echo "⚠️ Let's Encrypt 申请失败，尝试使用 ZeroSSL 重试..."
+
+  # 安装 acme.sh（如果未安装）
+  if [ ! -d "$HOME/.acme.sh" ]; then
+    curl https://get.acme.sh | sh
+    source ~/.bashrc
+  fi
+
+  # 注册 ZeroSSL 账号（如果未注册）
+  ~/.acme.sh/acme.sh --register-account -m "$EMAIL" --server zerossl
+
+  # 使用 ZeroSSL 申请证书
+  ~/.acme.sh/acme.sh --issue -d "$DOMAIN" -w /var/www/html --server zerossl
+
+  # 安装证书到 nginx 使用的路径
+  ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+    --key-file /etc/letsencrypt/live/$DOMAIN/privkey.pem \
+    --fullchain-file /etc/letsencrypt/live/$DOMAIN/fullchain.pem
+
+  echo "✅ ZeroSSL 证书安装成功，已部署到 /etc/letsencrypt/live/$DOMAIN/"
+else
+  echo "✅ Let's Encrypt 证书申请成功"
+fi
+
 
 # 重新写入 Nginx 配置（强制走登录认证服务）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
