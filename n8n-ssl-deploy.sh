@@ -211,7 +211,7 @@ app.post('/login', (req, res) => {
 
     const protocol = USE_SSL ? 'https://' : 'http://'
     const port = USE_SSL ? ':443' : ''
-    res.redirect(protocol + req.hostname + port) // ✅ 修改后的跳转
+    res.redirect(protocol + req.headers.host)
   } else {
     res.redirect('/login.html')
   }
@@ -364,6 +364,17 @@ echo "👤 用户名: $BASIC_USER"
 echo "🔒 密码: $BASIC_PASSWORD"
 EOF
 chmod +x /home/n8n/show-login.sh
+
+cat >/home/n8n/n8n-helper.sh <<'EOF'
+#!/bin/bash
+echo "可用命令："
+echo "1. 查看登录信息: bash /home/n8n/show-login.sh"
+echo "2. 重置账号密码: bash /home/n8n/reset-login.sh"
+echo "3. 手动备份数据: bash /home/n8n/backup.sh"
+echo "4. 清理旧备份: bash /home/n8n/clean-backups.sh"
+echo "5. 手动升级 n8n: bash /home/n8n/upgrade-n8n.sh"
+EOF
+chmod +x /home/n8n/n8n-helper.sh
 
 cat >/home/n8n/reset-login.sh <<'EOF'
 #!/bin/bash
