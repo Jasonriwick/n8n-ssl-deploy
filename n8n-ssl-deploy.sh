@@ -402,7 +402,12 @@ docker_compose -f /home/n8n/docker-compose.yml up -d
 # 提示信息
 echo ""
 echo "🚀 部署完成！🎉"
-echo "🌐 访问地址: https://$DOMAIN"
+if [[ "$ENABLE_SSL" == "yes" ]]; then
+  echo "🌐 访问地址: https://$DOMAIN"
+else
+  echo "🌐 访问地址: http://$DOMAIN"
+fi
+
 echo ""
 echo "🛡️ 登录信息（用于访问自定义登录页）："
 echo "👤 用户名: $BASIC_USER"
