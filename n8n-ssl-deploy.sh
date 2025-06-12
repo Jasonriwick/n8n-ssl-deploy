@@ -86,12 +86,26 @@ if command -v node &>/dev/null; then
     echo "✅ 检测到 Node.js 版本 >= 18，无需安装"
   else
     echo "⚠️ Node.js 版本过旧，升级至最新 LTS..."
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && apt-get install -y nodejs
+    if [[ "$OS" =~ ^(centos|rocky|almalinux|rhel)$ ]]; then
+      curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -
+      yum install -y nodejs
+    else
+      curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+      apt-get install -y nodejs
+    fi
   fi
 else
   echo "📦 安装 Node.js 最新 LTS..."
-  curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && apt-get install -y nodejs
+  if [[ "$OS" =~ ^(centos|rocky|almalinux|rhel)$ ]]; then
+    curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -
+    yum install -y nodejs
+  else
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+    apt-get install -y nodejs
+  fi
 fi
+
+
 
 # ----------------------------
 # Docker 安装（官方方式）
@@ -244,6 +258,8 @@ app.listen(PORT, () => {
   console.log(\`🔒 登录认证服务运行在端口 \${PORT}\`)
 })
 EOF
+
+echo "📢 注意：本地登录认证服务将监听端口 3000，如已被其他服务占用，请在 server.js 中修改端口号。" | tee -a "$LOG_FILE"
 
 # 写入 systemd 服务配置
 cat > /etc/systemd/system/n8n-auth.service <<EOF
@@ -459,6 +475,20 @@ docker pull docker.n8n.io/n8nio/n8n
 
 # 启动 n8n 容器
 docker_compose -f /home/n8n/docker-compose.yml up -d
+
+if [[ "$AUTO_UPDATE" == "yes" ]]; then
+  echo "🔄 添加每日自动更新任务..." | tee -a "$LOG_FILE"
+  cat > /home/n8n/auto-upgrade.sh <<'EOL'
+#!/bin/bash
+cd /home/n8n
+docker pull docker.n8n.io/n8nio/n8n
+docker compose -f docker-compose.yml down
+docker compose -f docker-compose.yml up -d
+EOL
+  chmod +x /home/n8n/auto-upgrade.sh
+  add_cron "0 3 * * * /home/n8n/auto-upgrade.sh >> /var/log/n8n-upgrade.log 2>&1"
+fi
+
 
 # ===============================
 # 🛡️ 配置 UFW 防火墙（可选）
