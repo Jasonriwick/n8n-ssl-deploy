@@ -340,9 +340,14 @@ fi
 
 # 启动所有服务
 echo "🔍 正在检查服务状态..."
+
+# 如果外部网络不存在，提前创建
+docker network create n8n-network || true
+
 systemctl restart nginx
 systemctl restart n8n-auth
 docker_compose -f /home/n8n/docker-compose.yml up -d
+
 
 # 提示信息
 echo ""
