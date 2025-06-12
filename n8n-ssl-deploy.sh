@@ -341,8 +341,13 @@ fi
 # 启动所有服务
 echo "🔍 正在检查服务状态..."
 
-# 如果外部网络不存在，提前创建
-docker network create n8n-network || true
+# 确保 n8n-network 存在，否则创建
+if ! docker network inspect n8n-network >/dev/null 2>&1; then
+  echo "🛠️ 未检测到 n8n-network，正在创建..."
+  docker network create n8n-network
+else
+  echo "✅ n8n-network 已存在，跳过创建"
+fi
 
 systemctl restart nginx
 systemctl restart n8n-auth
