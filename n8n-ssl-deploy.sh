@@ -217,6 +217,10 @@ app.post('/login', (req, res) => {
   }
 })
 
+app.listen(PORT, () => {
+  console.log(`🔒 登录认证服务运行在端口 ${PORT}`)
+})
+
 EOF
 
 # 写入 systemd 服务文件（如果不存在）
@@ -230,6 +234,8 @@ ExecStart=/usr/bin/node /home/n8n-auth/server.js
 Restart=always
 Environment=NODE_ENV=production
 User=root
+StandardOutput=append:/var/log/n8n-auth.log
+StandardError=append:/var/log/n8n-auth.err
 
 [Install]
 WantedBy=multi-user.target
@@ -281,8 +287,13 @@ server {
 EOF
 fi
 
+# 写入 .env 
+if [[ "$ENABLE_SSL" == "yes" ]]; then
+  WEBHOOK_URL="https://${DOMAIN}/"
+else
+  WEBHOOK_URL="http://${DOMAIN}/"
+fi
 
-# 写入基础 .env 信息
 cat >/home/n8n/.env <<EOF
 GENERIC_TIMEZONE="Asia/Shanghai"
 N8N_BASIC_AUTH_ACTIVE=true
@@ -290,14 +301,8 @@ N8N_BASIC_AUTH_USER=${BASIC_USER}
 N8N_BASIC_AUTH_PASSWORD=${BASIC_PASSWORD}
 N8N_HOST=${DOMAIN}
 ENABLE_SSL=${ENABLE_SSL}
+WEBHOOK_TUNNEL_URL=${WEBHOOK_URL}
 EOF
-
-# 根据 SSL 设置追加 WEBHOOK_TUNNEL_URL
-if [[ "$ENABLE_SSL" == "yes" ]]; then
-  echo "WEBHOOK_TUNNEL_URL=https://${DOMAIN}/" >> /home/n8n/.env
-else
-  echo "WEBHOOK_TUNNEL_URL=http://${DOMAIN}/" >> /home/n8n/.env
-fi
 
 
 # 写入 docker-compose.yml
