@@ -348,7 +348,7 @@ else
   fi
 
   # 使用 ZeroSSL 申请证书
-  ~/.acme.sh/acme.sh --issue -d "$DOMAIN" -w /var/www/html --server zerossl
+  ~/.acme.sh/acme.sh --issue -d "$DOMAIN" -w /var/www/html --server zerossl --debug 2 || echo "⚠️ ZeroSSL 暂时无法申请证书，可能已达限制。"
 
   # 安装证书到 nginx 使用的路径
   ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
