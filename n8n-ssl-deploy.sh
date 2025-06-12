@@ -302,6 +302,21 @@ networks:
 EOF
 
 # ===============================
+# 📦 安装认证服务依赖（Express 等）
+# ===============================
+
+echo "📦 安装认证服务依赖..." | tee -a "$LOG_FILE"
+
+cd /home/n8n-auth
+if [ ! -f package.json ]; then
+  npm init -y
+fi
+
+npm install express body-parser cookie-parser
+
+
+
+# ===============================
 # 🌐 配置 Nginx 反向代理与访问规则（第四部分）
 # ===============================
 
@@ -434,6 +449,13 @@ echo "🚀 启动认证服务与 N8N 容器..." | tee -a "$LOG_FILE"
 systemctl daemon-reexec
 systemctl daemon-reload
 systemctl enable --now n8n-auth
+
+# ===============================
+# 📥 拉取最新版 n8n 镜像
+# ===============================
+echo "📥 拉取 n8n 官方镜像..." | tee -a "$LOG_FILE"
+docker pull docker.n8n.io/n8nio/n8n
+
 
 # 启动 n8n 容器
 docker_compose -f /home/n8n/docker-compose.yml up -d
