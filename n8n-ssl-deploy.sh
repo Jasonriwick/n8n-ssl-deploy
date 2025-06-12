@@ -73,15 +73,36 @@ case "$OS" in
     ;;
 esac
 
-# 安装 Node.js 18
-if ! command -v node &>/dev/null || [[ $(node -v) != v18* ]]; then
-  echo "⬇️ 安装 Node.js 18..." | tee -a "$LOG_FILE"
-  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+# 安装 Node.js（使用 NodeSource 官方源，避免系统旧版本）
+if ! command -v node &>/dev/null; then
+  echo "⬇️ 未检测到 Node.js，安装最新 LTS 版本..." | tee -a "$LOG_FILE"
+  curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
   case "$OS" in
-    ubuntu|debian) apt install -y nodejs ;;
-    centos|rocky|almalinux|rhel|amzn) yum install -y nodejs ;;
+    ubuntu|debian)
+      apt install -y nodejs
+      ;;
+    centos|rocky|almalinux|rhel|amzn)
+      yum install -y nodejs
+      ;;
   esac
+else
+  NODE_VERSION=$(node -v | sed 's/v//g' | cut -d. -f1)
+  if [ "$NODE_VERSION" -lt 18 ]; then
+    echo "🔄 检测到旧版本 Node.js（v$NODE_VERSION），升级为最新 LTS..." | tee -a "$LOG_FILE"
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+    case "$OS" in
+      ubuntu|debian)
+        apt install -y nodejs
+        ;;
+      centos|rocky|almalinux|rhel|amzn)
+        yum install -y nodejs
+        ;;
+    esac
+  else
+    echo "✅ 已安装 Node.js $(node -v)，版本符合要求。" | tee -a "$LOG_FILE"
+  fi
 fi
+
 
 # 安装 Docker
 if ! command -v docker &>/dev/null; then
