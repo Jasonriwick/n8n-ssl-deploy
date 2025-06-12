@@ -115,7 +115,7 @@ mkdir -p /home/n8n
 mkdir -p /home/n8n-auth/public
 mkdir -p /var/www/html/.well-known/acme-challenge
 
-# 写入登录认证页面
+# 写入登录认证页面 HTML
 cat >/home/n8n-auth/public/login.html <<EOF
 <!DOCTYPE html>
 <html lang="zh">
@@ -179,7 +179,7 @@ cat >/home/n8n-auth/public/login.html <<EOF
 </html>
 EOF
 
-# 写入登录认证服务 Node.js 文件
+# 写入认证服务 Node.js 后端
 cat >/home/n8n-auth/server.js <<EOF
 const express = require('express')
 const path = require('path')
@@ -218,7 +218,7 @@ app.listen(PORT, () => {
 })
 EOF
 
-# 写入 .env 环境变量文件
+# 写入 .env 环境变量
 cat >/home/n8n/.env <<EOF
 GENERIC_TIMEZONE="Asia/Shanghai"
 N8N_BASIC_AUTH_ACTIVE=true
@@ -251,39 +251,7 @@ volumes:
   n8n_data:
 EOF
 
-# 设置 acme.sh 自动续签（ZeroSSL 使用时启用）
-if [ -f "$HOME/.acme.sh/acme.sh" ]; then
-  ~/.acme.sh/acme.sh --upgrade --auto-upgrade
-  ~/.acme.sh/acme.sh --set-default-ca --server zerossl
-  ~/.acme.sh/acme.sh --install-cronjob
-fi
-
-# 重新写入 Nginx 配置（强制走登录认证服务）
-cat <<EOF > /etc/nginx/conf.d/n8n.conf
-server {
-    listen 80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-# 写入 backup.sh（每日备份）
+# 写入工具脚本
 cat >/home/n8n/backup.sh <<'EOF'
 #!/bin/bash
 DATE=$(date +%Y-%m-%d_%H-%M-%S)
@@ -293,14 +261,12 @@ docker exec n8n tar -czf - /home/node/.n8n > "$BACKUP_DIR/n8n-backup-$DATE.tar.g
 EOF
 chmod +x /home/n8n/backup.sh
 
-# 写入 clean-backups.sh（保留最近 7 天备份）
 cat >/home/n8n/clean-backups.sh <<'EOF'
 #!/bin/bash
 find /home/n8n/backups/ -name "*.tar.gz" -type f -mtime +7 -delete
 EOF
 chmod +x /home/n8n/clean-backups.sh
 
-# 写入 check-update.sh（检查镜像更新）
 cat >/home/n8n/check-update.sh <<'EOF'
 #!/bin/bash
 echo "🔍 检查 n8n 镜像更新..."
@@ -308,7 +274,6 @@ docker pull docker.n8n.io/n8nio/n8n
 EOF
 chmod +x /home/n8n/check-update.sh
 
-# 写入 auto-upgrade.sh（每日自动升级）
 cat >/home/n8n/auto-upgrade.sh <<'EOF'
 #!/bin/bash
 /home/n8n/check-update.sh
@@ -317,7 +282,6 @@ docker compose -f /home/n8n/docker-compose.yml up -d
 EOF
 chmod +x /home/n8n/auto-upgrade.sh
 
-# 写入 upgrade-n8n.sh（手动升级总入口）
 cat >/home/n8n/upgrade-n8n.sh <<'EOF'
 #!/bin/bash
 echo "⬆️ 正在升级 n8n..."
@@ -325,7 +289,6 @@ echo "⬆️ 正在升级 n8n..."
 EOF
 chmod +x /home/n8n/upgrade-n8n.sh
 
-# 写入 show-login.sh（查看登录账号密码）
 cat >/home/n8n/show-login.sh <<EOF
 #!/bin/bash
 echo "👤 用户名: $BASIC_USER"
@@ -333,7 +296,6 @@ echo "🔒 密码: $BASIC_PASSWORD"
 EOF
 chmod +x /home/n8n/show-login.sh
 
-# 写入 reset-login.sh（重设登录）
 cat >/home/n8n/reset-login.sh <<'EOF'
 #!/bin/bash
 read -p "👤 新用户名: " NEW_USER
@@ -356,16 +318,13 @@ if [[ "$AUTO_UPDATE" == "yes" ]]; then
   add_cron "30 4 * * * bash /home/n8n/auto-upgrade.sh"
 fi
 
-# 重启 nginx 应用新配置
-systemctl start nginx
-
-# 启动服务
+# 启动所有服务
 echo "🔍 正在检查服务状态..."
 systemctl restart nginx
 systemctl restart n8n-auth
 docker_compose -f /home/n8n/docker-compose.yml up -d
 
-# 最终提示
+# 提示信息
 echo ""
 echo "🚀 部署完成！🎉"
 echo "🌐 访问地址: https://$DOMAIN"
