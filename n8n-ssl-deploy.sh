@@ -190,6 +190,7 @@ const app = express()
 const PORT = 5678
 const USER = "${BASIC_USER}"
 const PASS = "${BASIC_PASSWORD}"
+const USE_SSL = process.env.ENABLE_SSL === 'yes'; // ✅ 添加这一行
 
 app.use(bodyParser.urlencoded({ extended: true }))
 app.use(cookieParser())
@@ -207,15 +208,15 @@ app.post('/login', (req, res) => {
   const { username, password } = req.body
   if (username === USER && password === PASS) {
     res.cookie('auth', 'yes', { maxAge: 86400000 })
-    res.redirect('https://' + req.hostname + ':443')
+
+    const protocol = USE_SSL ? 'https://' : 'http://'
+    const port = USE_SSL ? ':443' : ''
+    res.redirect(protocol + req.hostname + port) // ✅ 修改后的跳转
   } else {
     res.redirect('/login.html')
   }
 })
 
-app.listen(PORT, () => {
-  console.log(\`🔒 登录认证服务运行在端口 \${PORT}\`)
-})
 EOF
 
 # 写入 systemd 服务文件（如果不存在）
@@ -289,6 +290,7 @@ N8N_BASIC_AUTH_USER=${BASIC_USER}
 N8N_BASIC_AUTH_PASSWORD=${BASIC_PASSWORD}
 N8N_HOST=${DOMAIN}
 WEBHOOK_TUNNEL_URL=https://${DOMAIN}/
+ENABLE_SSL=${ENABLE_SSL}
 EOF
 
 # 写入 docker-compose.yml
