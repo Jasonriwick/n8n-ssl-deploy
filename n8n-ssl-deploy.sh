@@ -87,6 +87,14 @@ fi
 echo "✅ 当前 Node.js: $(node -v)" | tee -a "$LOG_FILE"
 echo "✅ 当前 npm: $(npm -v)" | tee -a "$LOG_FILE"
 
+# 检测 apt 锁定状态（可放在 apt install 前）
+if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+  echo "⏳ 系统正在进行自动更新，占用了 apt 锁..."
+  echo "请稍等几分钟，或使用以下命令强制终止："
+  echo "  sudo kill -9 \$(lsof -t /var/lib/dpkg/lock-frontend)"
+  exit 1
+fi
+
 
 # 安装通用依赖项
 echo "📦 安装通用依赖…" | tee -a "$LOG_FILE"
