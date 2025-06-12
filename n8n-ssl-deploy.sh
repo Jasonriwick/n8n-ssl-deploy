@@ -239,9 +239,8 @@ app.post('/login', (req, res) => {
 })
 
 app.listen(PORT, () => {
-  console.log(`🔒 登录认证服务运行在端口 ${PORT}`)
+  console.log("🔐 Auth service running on port " + PORT)
 })
-
 EOF
 
 # 写入 systemd 服务文件（如果不存在）
@@ -265,6 +264,9 @@ EOF
 # 注册并启用 n8n-auth 服务
 systemctl daemon-reload
 systemctl enable n8n-auth
+
+# 确保 nginx 配置目录存在
+mkdir -p /etc/nginx/conf.d
 
 # 写入 Nginx 配置文件（根据是否启用 SSL 决定）
 if [[ "$ENABLE_SSL" == "yes" ]]; then
