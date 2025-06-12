@@ -38,6 +38,23 @@ case "$OS" in
   *)        echo "❌ 不支持的系统: $OS" && exit 1 ;;
 esac
 
+# 安装 Docker 和 Docker Compose（如未安装）
+if ! command -v docker &>/dev/null; then
+  echo "🐳 未检测到 Docker，正在安装..."
+  curl -fsSL https://get.docker.com | bash
+  systemctl enable docker
+  systemctl start docker
+else
+  echo "✅ 已检测到 Docker"
+fi
+
+if ! docker compose version &>/dev/null && ! command -v docker-compose &>/dev/null; then
+  echo "📦 未检测到 docker compose，正在安装插件版本..."
+  apt install -y docker-compose-plugin || yum install -y docker-compose-plugin || dnf install -y docker-compose-plugin
+else
+  echo "✅ docker compose 可用"
+fi
+
 # 用户输入部分
 read -p "🌐 输入域名 (如 n8n.example.com): " DOMAIN
 DOMAIN=$(echo "$DOMAIN" | tr -d '\r\n' | xargs)
