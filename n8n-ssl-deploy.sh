@@ -318,11 +318,19 @@ systemctl stop nginx
 
 # 尝试申请 Let's Encrypt 证书
 echo "🔐 正在尝试使用 Let's Encrypt 申请证书..."
-certbot certonly --webroot -w /var/www/html -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
+certbot certonly --webroot -w /var/www/html -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
 CERTBOT_EXIT=$?
+
+SSL_METHOD_FILE="/home/n8n/.ssl_method"
 
 if [ "$CERTBOT_EXIT" -ne 0 ]; then
   echo "⚠️ Let's Encrypt 申请失败，尝试使用 ZeroSSL 重试..."
+
+  # 检查 curl 是否安装
+  if ! command -v curl &>/dev/null; then
+    echo "❌ 缺少 curl，无法安装 acme.sh，请先安装 curl。" | tee -a "$LOG_FILE"
+    exit 1
+  fi
 
   # 安装 acme.sh（如果未安装）
   if [ ! -d "$HOME/.acme.sh" ]; then
@@ -330,8 +338,12 @@ if [ "$CERTBOT_EXIT" -ne 0 ]; then
     source ~/.bashrc
   fi
 
-  # 注册 ZeroSSL 账号（如果未注册）
-  ~/.acme.sh/acme.sh --register-account -m "$EMAIL" --server zerossl
+  # ZeroSSL 账号注册前检测（避免重复注册）
+  if [ ! -f "$HOME/.acme.sh/account.conf" ] || ! grep -q 'ZEROSSL_EAB_KID' "$HOME/.acme.sh/account.conf"; then
+    ~/.acme.sh/acme.sh --register-account -m "$EMAIL" --server zerossl
+  else
+    echo "🔄 ZeroSSL 账户已存在，跳过注册"
+  fi
 
   # 使用 ZeroSSL 申请证书
   ~/.acme.sh/acme.sh --issue -d "$DOMAIN" -w /var/www/html --server zerossl
@@ -339,25 +351,23 @@ if [ "$CERTBOT_EXIT" -ne 0 ]; then
   # 安装证书到 nginx 使用的路径
   ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
     --key-file /etc/letsencrypt/live/$DOMAIN/privkey.pem \
-    --fullchain-file /etc/letsencrypt/live/$DOMAIN/fullchain.pem
+    --fullchain-file /etc/letsencrypt/live/$DOMAIN/fullchain.pem \
+    --reloadcmd "systemctl restart nginx"
 
   echo "✅ ZeroSSL 证书安装成功，已部署到 /etc/letsencrypt/live/$DOMAIN/"
+  echo "zerossl" > "$SSL_METHOD_FILE"
 else
   echo "✅ Let's Encrypt 证书申请成功"
+  echo "letsencrypt" > "$SSL_METHOD_FILE"
 fi
 
-# 添加 acme.sh 自动续签计划（ZeroSSL 使用时启用）
-~/.acme.sh/acme.sh --upgrade --auto-upgrade
-~/.acme.sh/acme.sh --set-default-ca --server zerossl
-~/.acme.sh/acme.sh --install-cronjob
+# 设置 acme.sh 自动续签（ZeroSSL 使用时启用）
+if [ -f "$HOME/.acme.sh/acme.sh" ]; then
+  ~/.acme.sh/acme.sh --upgrade --auto-upgrade
+  ~/.acme.sh/acme.sh --set-default-ca --server zerossl
+  ~/.acme.sh/acme.sh --install-cronjob
+fi
 
-# certbot 已自动在安装时加入：
-# /etc/cron.d/certbot
-
-~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
---key-file /etc/letsencrypt/live/$DOMAIN/privkey.pem \
---fullchain-file /etc/letsencrypt/live/$DOMAIN/fullchain.pem \
---reloadcmd "systemctl restart nginx"
 
 # 重新写入 Nginx 配置（强制走登录认证服务）
 cat <<EOF > /etc/nginx/conf.d/n8n.conf
