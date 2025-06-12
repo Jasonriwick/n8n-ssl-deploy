@@ -238,6 +238,49 @@ EOF
 systemctl daemon-reload
 systemctl enable n8n-auth
 
+# 写入 Nginx 配置文件（根据是否启用 SSL 决定）
+if [[ "$ENABLE_SSL" == "yes" ]]; then
+cat >/etc/nginx/conf.d/n8n.conf <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+else
+cat >/etc/nginx/conf.d/n8n.conf <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+fi
+
+
 # 写入 .env 环境变量
 cat >/home/n8n/.env <<EOF
 GENERIC_TIMEZONE="Asia/Shanghai"
