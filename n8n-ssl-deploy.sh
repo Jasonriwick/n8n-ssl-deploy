@@ -289,7 +289,11 @@ N8N_BASIC_AUTH_ACTIVE=true
 N8N_BASIC_AUTH_USER=${BASIC_USER}
 N8N_BASIC_AUTH_PASSWORD=${BASIC_PASSWORD}
 N8N_HOST=${DOMAIN}
-WEBHOOK_TUNNEL_URL=https://${DOMAIN}/
+if [[ "$ENABLE_SSL" == "yes" ]]; then
+  echo "WEBHOOK_TUNNEL_URL=https://${DOMAIN}/" >> /home/n8n/.env
+else
+  echo "WEBHOOK_TUNNEL_URL=http://${DOMAIN}/" >> /home/n8n/.env
+fi
 ENABLE_SSL=${ENABLE_SSL}
 EOF
 
