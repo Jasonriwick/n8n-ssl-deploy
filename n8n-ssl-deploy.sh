@@ -417,32 +417,74 @@ fi
 npm install express body-parser cookie-parser
 
 
-
 # ===============================
-# 🌐 配置 Nginx 反向代理与访问规则（第四部分）
+# 🌐 配置 Nginx 初始反向代理（仅 80 端口）
 # ===============================
 
-echo "🌐 配置 Nginx ..." | tee -a "$LOG_FILE"
+echo "🌐 配置初始 Nginx（HTTP）..." | tee -a "$LOG_FILE"
 
-# 创建 Nginx 配置目录（如果不存在）
 mkdir -p /etc/nginx/conf.d
 
-# 根据 SSL 开关写入对应配置
-if [[ "$ENABLE_SSL" == "yes" ]]; then
-  cat > /etc/nginx/conf.d/n8n.conf <<EOF
+cat > /etc/nginx/conf.d/n8n.conf <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
 
-    # 自动跳转至 HTTPS
     location / {
-        return 301 https://\$host\$request_uri;
+        proxy_pass http://localhost:5679;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /login.html {
+        proxy_pass http://localhost:3000/login.html;
+    }
+
+    location /style.css {
+        proxy_pass http://localhost:3000/style.css;
+    }
+
+    location /login {
+        proxy_pass http://localhost:3000/login;
     }
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/html;
     }
 }
+EOF
+
+# 测试并重启 Nginx
+if command -v nginx &>/dev/null; then
+  nginx -t && systemctl restart nginx
+fi
+
+# ===============================
+# 🔐 自动申请 SSL（仅启用 SSL 时执行）
+# ===============================
+if [[ "$ENABLE_SSL" == "yes" ]]; then
+  echo "🔐 准备申请 SSL 证书..." | tee -a "$LOG_FILE"
+
+  # 配置验证目录
+  mkdir -p /var/www/html/.well-known/acme-challenge
+
+  # 使用 certbot 优先申请 Let's Encrypt
+  if command -v certbot &>/dev/null; then
+    certbot certonly --webroot -w /var/www/html -d ${DOMAIN} --non-interactive --agree-tos -m ${EMAIL} || CERTBOT_FAILED=true
+  else
+    CERTBOT_FAILED=true
+  fi
+
+  # 如果证书成功申请，则插入 HTTPS 配置
+  if [[ "$CERTBOT_FAILED" != "true" && -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
+    echo "✅ 证书申请成功，写入 443 配置..." | tee -a "$LOG_FILE"
+    cat >> /etc/nginx/conf.d/n8n.conf <<EOF
 
 server {
     listen 443 ssl http2;
@@ -477,77 +519,12 @@ server {
     }
 }
 EOF
-
-else
-  cat > /etc/nginx/conf.d/n8n.conf <<EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-
-    location / {
-        proxy_pass http://localhost:5679;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    location /login.html {
-        proxy_pass http://localhost:3000/login.html;
-    }
-
-    location /style.css {
-        proxy_pass http://localhost:3000/style.css;
-    }
-
-    location /login {
-        proxy_pass http://localhost:3000/login;
-    }
-}
-EOF
+    systemctl reload nginx
+  else
+    echo "❌ 证书申请失败，未写入 443 配置。请手动排查 certbot 错误。" | tee -a "$LOG_FILE"
+  fi
 fi
 
-# 测试并重启 Nginx（防止未安装时报错）
-if command -v nginx &>/dev/null; then
-  nginx -t && systemctl restart nginx
-fi
-
-# ===============================
-# 🔐 自动申请 SSL（仅启用 SSL 时执行）
-# ===============================
-if [[ "$ENABLE_SSL" == "yes" ]]; then
-  echo "🔐 准备申请 SSL 证书..." | tee -a "$LOG_FILE"
-
-  # 配置验证目录
-  mkdir -p /var/www/html/.well-known/acme-challenge
-
-  # 安装 acme.sh 脚本
-  curl https://get.acme.sh | sh -s email=${EMAIL}
-  export PATH="$HOME/.acme.sh":$PATH
-
-  # 优先使用 Let's Encrypt
-  ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-  ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --webroot /var/www/html || \
-  (
-    echo "⚠️ Let's Encrypt 失败，尝试使用 ZeroSSL" | tee -a "$LOG_FILE"
-    ~/.acme.sh/acme.sh --set-default-ca --server zerossl
-    ~/.acme.sh/acme.sh --register-account -m ${EMAIL} --agree-tos
-    ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --webroot /var/www/html
-  )
-
-  # 安装证书至标准路径
-  ~/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
-    --key-file /etc/letsencrypt/live/${DOMAIN}/privkey.pem \
-    --fullchain-file /etc/letsencrypt/live/${DOMAIN}/fullchain.pem \
-    --reloadcmd "systemctl reload nginx"
-
-  # 设置自动续签
-  ~/.acme.sh/acme.sh --upgrade --auto-upgrade
-fi
 
 # ===============================
 # 🚀 启动登录认证服务 + docker 容器
