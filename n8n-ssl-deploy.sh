@@ -168,8 +168,10 @@ cat > /home/n8n-auth/public/login.html <<EOF
   <meta charset="UTF-8">
   <title>登录 N8N</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js" integrity="sha512-JaYZ25HVJhEiMRYTLJ+wA4PKaEpECObAzmXn4CVynb2mBQtGeYhvcohYfZ1DjRkBiMnmYzXEOKpO6l3W7xGpZg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
 <body>
+  <canvas id="bg-canvas"></canvas>
   <div class="login-container">
     <h2>欢迎使用 John 一键部署版 N8N</h2>
     <form method="POST" action="/login">
@@ -179,28 +181,97 @@ cat > /home/n8n-auth/public/login.html <<EOF
     </form>
     <div class="footer">Powered by JOHN</div>
   </div>
+  <script>
+    // 星点线线背景
+    const canvas = document.getElementById('bg-canvas');
+    const ctx = canvas.getContext('2d');
+    let w = window.innerWidth;
+    let h = window.innerHeight;
+    canvas.width = w;
+    canvas.height = h;
+    let stars = Array.from({length: 80}, () => ({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      r: Math.random() * 1.5 + 0.5,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: (Math.random() - 0.5) * 0.3
+    }));
+
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
+      for (let i = 0; i < stars.length; i++) {
+        let p = stars[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 0 || p.x > w) p.vx *= -1;
+        if (p.y < 0 || p.y > h) p.vy *= -1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, 2 * Math.PI);
+        ctx.fillStyle = '#ffffffaa';
+        ctx.fill();
+
+        for (let j = i + 1; j < stars.length; j++) {
+          let q = stars[j];
+          let dx = p.x - q.x;
+          let dy = p.y - q.y;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 100) {
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(q.x, q.y);
+            ctx.strokeStyle = `rgba(255,255,255,${1 - dist / 100})`;
+            ctx.stroke();
+          }
+        }
+      }
+      requestAnimationFrame(draw);
+    }
+    draw();
+
+    // 动态输入框 GSAP 演练
+    gsap.from("input", {opacity: 0, y: 30, stagger: 0.2, duration: 1});
+    gsap.from("button", {opacity: 0, y: 30, delay: 0.6, duration: 1});
+  </script>
 </body>
 </html>
 EOF
 
 # 写入样式文件 style.css
 cat > /home/n8n-auth/public/style.css <<EOF
-body {
-  background-color: #0d1a26;
-  color: #fff;
-  font-family: sans-serif;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100vh;
+html, body {
   margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Helvetica Neue", sans-serif;
+  background: linear-gradient(135deg, #101e2e, #1c2f44);
+}
+#bg-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 0;
 }
 .login-container {
-  background-color: #1f2d3d;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background-color: rgba(31, 45, 61, 0.95);
   padding: 40px;
-  border-radius: 12px;
+  border-radius: 16px;
   text-align: center;
-  box-shadow: 0 0 15px rgba(0,0,0,0.3);
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.4);
+  z-index: 1;
+  min-width: 320px;
+  max-width: 90vw;
+  backdrop-filter: blur(10px);
+}
+.login-container h2 {
+  margin-bottom: 24px;
+  color: #fff;
+  font-size: 20px;
 }
 input {
   padding: 12px;
@@ -208,19 +279,34 @@ input {
   width: 100%;
   border-radius: 6px;
   border: none;
+  box-sizing: border-box;
+  transition: box-shadow 0.3s ease;
+}
+input:focus {
+  outline: none;
+  box-shadow: 0 0 5px #1890ff;
 }
 button {
   padding: 12px 30px;
-  background-color: #1890ff;
+  background-image: linear-gradient(135deg, #1890ff, #0050b3);
   color: white;
   border: none;
   border-radius: 6px;
   cursor: pointer;
+  width: 100%;
+  margin-top: 10px;
+  font-weight: bold;
+  transition: background 0.3s, transform 0.2s;
+}
+button:hover {
+  transform: scale(1.03);
+  background-image: linear-gradient(135deg, #40a9ff, #096dd9);
 }
 .footer {
   margin-top: 20px;
   font-size: 12px;
-  opacity: 0.5;
+  color: #ccc;
+  opacity: 0.6;
 }
 EOF
 
@@ -368,10 +454,14 @@ server {
 
     location / {
         proxy_pass http://localhost:5679;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
         proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location /login.html {
@@ -396,10 +486,14 @@ server {
 
     location / {
         proxy_pass http://localhost:5679;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
         proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto http;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location /login.html {
